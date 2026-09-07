@@ -235,6 +235,7 @@ class VoronoiWaypointManager:
                 previous_state=previous,
                 stay_in_field=planner_input.stay_in_field,
                 record=planner_input.record,
+                search_key=robot_key,
             )
             new_waypoints = tuple(
                 _with_heading(point, target_pose[2])

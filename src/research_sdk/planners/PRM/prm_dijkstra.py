@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Hashable
 from dataclasses import replace
 
 import networkx as nx
@@ -56,6 +57,7 @@ from research_sdk.planners.common import (
     path_length_mm,
 )
 from research_sdk.planners.Dijkstra.waypoint_manager import PlannerInput, PlannerOutput
+from research_sdk.planners.search import shortest_path_nx
 from research_sdk.planners.reroute import (
     DEFAULT_PERIODIC_REROUTE_FRAMES,
     RouteState,
@@ -109,6 +111,7 @@ def plan(
     seed: int | None = 0,
     skip_direct_path: bool = False,
     record: StepRecorder | None = None,
+    search_key: Hashable = None,
 ) -> PlanResult:
     """Plan a path with PRM (random milestones + k-NN links) + Dijkstra.
 
@@ -262,9 +265,21 @@ def plan(
                     weight = float(dist_matrix[local_i, local_j])
                     graph.add_edge(global_i, global_j, weight=weight)
 
-        try:
-            node_path = nx.dijkstra_path(graph, start_idx, goal_idx, weight="weight")
-        except (nx.NetworkXNoPath, nx.NodeNotFound):
+        # Shared with the visibility graph and Voronoi so the three differ
+        # only in the roadmap they hand over; see `planners/search.py`.
+        # Resampling below replaces the milestones wholesale, so this
+        # planner's roadmap is a new one nearly every call by construction --
+        # which is what the reuse tally is there to measure.
+        node_positions = {i: (float(nodes[i][0]), float(nodes[i][1])) for i in graph}
+        node_path, _stats = shortest_path_nx(
+            graph,
+            node_positions,
+            start_idx,
+            goal_idx,
+            planner="prm",
+            key=search_key,
+        )
+        if not node_path:
             seed = None if seed is None else seed + 1
             rng = np.random.default_rng(seed)
             continue
@@ -318,7 +333,8 @@ class PRMPlanner:
         if self.use_reroute_gate and planner_input.scene is not None:
             return self._gated_plan(planner_input)
         request = _plan_request_from_planner_input(planner_input)
-        result = plan(request, **self._plan_kwargs)
+        robot_key = (bool(planner_input.is_yellow), int(planner_input.robot_id))
+        result = plan(request, search_key=robot_key, **self._plan_kwargs)
         return _planner_output_from_plan_result(planner_input, result)
 
     def _gated_plan(self, planner_input: PlannerInput) -> PlannerOutput:
@@ -359,7 +375,9 @@ class PRMPlanner:
             return replace(cached, need_reroute=False, did_reroute=False)
 
         request = _plan_request_from_planner_input(planner_input)
-        result = plan(request, **self._plan_kwargs)
+        # One persistent search tree per robot: two robots planning in the
+        # same frame must not force each other to reinitialise.
+        result = plan(request, search_key=robot_key, **self._plan_kwargs)
         output = _planner_output_from_plan_result(planner_input, result)
         commit_reroute(state, output.waypoints, target_pose)
         self._last_output_by_robot[robot_key] = output

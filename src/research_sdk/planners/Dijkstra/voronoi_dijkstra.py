@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Hashable
 from dataclasses import dataclass
 from math import hypot
 from typing import Iterable
-
-import networkx as nx
 
 from research_sdk.config import (
     DEFENCE_X_MM,
@@ -29,6 +28,7 @@ from research_sdk.config import (
     VORONOI_OBSTACLE_COST_WEIGHT,
     VORONOI_TARGET_DEAD_ZONE_MM,
 )
+from research_sdk.planners.search import shortest_path
 from research_sdk.planners.common import StepRecorder
 from research_sdk.world.map.geometry import distance_2_segment
 from research_sdk.world.map.voronoi.voronoi_generator import (
@@ -77,6 +77,8 @@ class VoronoiDijkstraPlanner:
         max_density_nodes: int = VORONOI_MAX_DENSITY_NODES,
         obstacle_cost_weight: float = VORONOI_OBSTACLE_COST_WEIGHT,
         boundary_inset_mm: float = VORONOI_BOUNDARY_INSET_MM,
+        placement_mode: str = "density_grid",
+        grid_spacing_mm: float | None = None,
     ) -> None:
         self.target_dead_zone_mm = float(target_dead_zone_mm)
         self.connection_count = int(connection_count)
@@ -86,6 +88,21 @@ class VoronoiDijkstraPlanner:
         self.max_density_nodes = int(max_density_nodes)
         self.obstacle_cost_weight = float(obstacle_cost_weight)
         self.boundary_inset_mm = float(boundary_inset_mm)
+        # Where the virtual sites go, passed straight through to
+        # `voronoi_generator.generate_bounded_voronoi_map`. "density_grid" (the
+        # default, and what every measurement in this study used) places sites
+        # by obstacle density, so the site set MOVES with the obstacles and the
+        # tessellation is rebuilt from scratch every frame. "grid" pins them to
+        # a fixed lattice, which is the only configuration under which the
+        # roadmap can be said to have a stable backbone. The difference matters
+        # for any claim about incremental repair; see
+        # scripts/measure_search_reuse.py --voronoi-placement.
+        self.placement_mode = str(placement_mode)
+        # Only read when placement_mode is "grid". None leaves the generator's
+        # own default of twice the clearance radius, 240 mm, which tiles a
+        # 9 x 6 m pitch with 966 nodes and takes 4.5 s to build. Anything using
+        # a fixed lattice in earnest has to set this; 1200 mm builds in 11.3 ms.
+        self.grid_spacing_mm = None if grid_spacing_mm is None else float(grid_spacing_mm)
 
     def plan(
         self,
@@ -99,6 +116,7 @@ class VoronoiDijkstraPlanner:
         stay_in_field: bool = True,
         skip_direct_path: bool = False,
         record: StepRecorder | None = None,
+        search_key: Hashable = None,
     ) -> PlanResult:
         """Return waypoints from *start_pos_mm* toward *target_pos_mm*.
 
@@ -187,6 +205,15 @@ class VoronoiDijkstraPlanner:
             max_density_nodes=self.max_density_nodes,
             obstacle_cost_weight=self.obstacle_cost_weight,
             boundary_inset_mm=self.boundary_inset_mm,
+            placement_mode=self.placement_mode,
+            **(
+                {}
+                if self.grid_spacing_mm is None
+                else {
+                    "grid_spacing_x_mm": self.grid_spacing_mm,
+                    "grid_spacing_y_mm": self.grid_spacing_mm,
+                }
+            ),
         )
         node_pos = {node.id: (node.x, node.y) for node in voronoi_map.nodes}
         adjacency: dict[int, list[tuple[int, float]]] = {}
@@ -220,7 +247,9 @@ class VoronoiDijkstraPlanner:
         if self.START_ID not in adjacency or self.TARGET_ID not in adjacency:
             return PlanResult(target_mm=target, waypoints_mm=())
 
-        ids = self._dijkstra(adjacency, self.START_ID, self.TARGET_ID)
+        ids = self._search(
+            adjacency, node_pos, self.START_ID, self.TARGET_ID, search_key
+        )
         if not ids:
             return PlanResult(target_mm=target, waypoints_mm=())
 
@@ -385,32 +414,49 @@ class VoronoiDijkstraPlanner:
                 risk += (influence_mm - clearance) / influence_mm
         return 1.0 + self.obstacle_cost_weight * risk
 
-    def _dijkstra(
+    def _search(
         self,
         adjacency: dict[int, list[tuple[int, float]]],
+        node_pos: dict[int, Point],
         start_id: int,
         target_id: int,
+        search_key: Hashable = None,
     ) -> list[int]:
-        """Shortest path over ``adjacency`` via ``networkx.dijkstra_path`` --
-        the same search VisibilityGraph and PRM already use (see
+        """Shortest path over ``adjacency`` via ``planners/search.py`` -- the
+        same search VisibilityGraph and PRM call (see
         ``planners/VisibilityGraph/visibility_graph.py`` and
         ``planners/PRM/prm_dijkstra.py``), so all three planners are compared
-        on identical shortest-path behaviour and only differ in how they
-        build the graph/roadmap/map handed to it. Previously a hand-rolled
-        heapq Dijkstra -- algorithmically equivalent (same textbook
-        algorithm, same non-negative edge weights), but keeping a second,
-        bespoke implementation around was an unforced source of doubt when
-        comparing path quality across planners, for no behavioural benefit.
+        on identical shortest-path behaviour and differ only in how they build
+        the graph/roadmap/map handed to it.
+
+        This has now been a hand-rolled heapq Dijkstra, then
+        ``networkx.dijkstra_path``, and now the shared D* Lite. All three are
+        the same shortest path over the same non-negative weights; what
+        changed each time was where the implementation lives, because a second
+        bespoke copy of the search was an unforced source of doubt when
+        comparing path quality across planners.
+
+        ``node_pos`` is required, not optional: the shared search identifies a
+        vertex by its position, which is the only thing that means the same
+        node from one call to the next. A tessellation index does not.
         """
-        graph = nx.Graph()
-        graph.add_nodes_from(adjacency)
+        # An undirected edge appearing in both directions with different costs
+        # would be ambiguous; take the smaller. In practice the costs agree,
+        # because `_obstacle_cost_multiplier` is symmetric in its endpoints.
+        neighbours: dict[int, dict[int, float]] = {nid: {} for nid in adjacency}
         for node_id, edges in adjacency.items():
             for neighbour_id, cost in edges:
-                graph.add_edge(node_id, neighbour_id, weight=cost)
-        try:
-            return nx.dijkstra_path(graph, start_id, target_id, weight="weight")
-        except (nx.NetworkXNoPath, nx.NodeNotFound):
-            return []
+                row = neighbours[node_id]
+                row[neighbour_id] = min(row.get(neighbour_id, cost), cost)
+        ids, _stats = shortest_path(
+            neighbours,
+            node_pos,
+            start_id,
+            target_id,
+            planner="voronoi",
+            key=search_key,
+        )
+        return ids
 
 
 def _point2(point: tuple[float, ...] | list[float]) -> Point:

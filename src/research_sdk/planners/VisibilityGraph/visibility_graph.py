@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Hashable
 from dataclasses import replace
 
 import networkx as nx
@@ -56,6 +57,7 @@ from research_sdk.planners.common import (
     path_length_mm,
 )
 from research_sdk.planners.Dijkstra.waypoint_manager import PlannerInput, PlannerOutput
+from research_sdk.planners.search import shortest_path_nx
 from research_sdk.planners.reroute import (
     DEFAULT_PERIODIC_REROUTE_FRAMES,
     RouteState,
@@ -241,6 +243,7 @@ def plan(
     polygon_sides: int = VISIBILITY_POLYGON_SIDES,
     skip_direct_path: bool = False,
     record: StepRecorder | None = None,
+    search_key: Hashable = None,
 ) -> PlanResult:
     """Plan a path with a Minkowski-inflated visibility graph + Dijkstra.
 
@@ -392,9 +395,20 @@ def plan(
                 weight = math.hypot(p_i[0] - p_j[0], p_i[1] - p_j[1])
                 graph.add_edge(vertex_labels[i], vertex_labels[j], weight=weight)
 
-    try:
-        node_path = nx.dijkstra_path(graph, "start", "goal", weight="weight")
-    except (nx.NetworkXNoPath, nx.NodeNotFound):
+    label_to_point = dict(zip(vertex_labels, all_vertices))
+    # Search is shared with PRM and Voronoi so the three differ only in the
+    # graph they hand over. ``search_key`` is the robot key, which is what
+    # lets D* Lite repair that robot's own previous tree; see
+    # ``planners/search.py`` for why the labels above get rewritten first.
+    node_path, _stats = shortest_path_nx(
+        graph,
+        label_to_point,
+        "start",
+        "goal",
+        planner="visibility_graph",
+        key=search_key,
+    )
+    if not node_path:
         return PlanResult(
             success=False,
             waypoints_mm=(),
@@ -404,7 +418,6 @@ def plan(
             message="no path found through visibility graph",
         )
 
-    label_to_point = dict(zip(vertex_labels, all_vertices))
     waypoints = tuple(label_to_point[label] for label in node_path)
     if record is not None:
         record.log("path", waypoints=waypoints, direct=False)
@@ -446,7 +459,8 @@ class VisibilityGraphPlanner:
         if self.use_reroute_gate and planner_input.scene is not None:
             return self._gated_plan(planner_input)
         request = _plan_request_from_planner_input(planner_input)
-        result = plan(request, **self._plan_kwargs)
+        robot_key = (bool(planner_input.is_yellow), int(planner_input.robot_id))
+        result = plan(request, search_key=robot_key, **self._plan_kwargs)
         return _planner_output_from_plan_result(planner_input, result)
 
     def _gated_plan(self, planner_input: PlannerInput) -> PlannerOutput:
@@ -487,7 +501,9 @@ class VisibilityGraphPlanner:
             return replace(cached, need_reroute=False, did_reroute=False)
 
         request = _plan_request_from_planner_input(planner_input)
-        result = plan(request, **self._plan_kwargs)
+        # One persistent search tree per robot: two robots planning in the
+        # same frame must not force each other to reinitialise.
+        result = plan(request, search_key=robot_key, **self._plan_kwargs)
         output = _planner_output_from_plan_result(planner_input, result)
         commit_reroute(state, output.waypoints, target_pose)
         self._last_output_by_robot[robot_key] = output
