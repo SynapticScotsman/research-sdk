@@ -1,0 +1,619 @@
+% Draft sections for "Efficient path planning framework for Dynamic Robot
+% navigation". Every number here comes from a run in this repository and can be
+% regenerated from saved results; the provenance comment above each table names
+% the script and the saved JSON.
+%
+% Numbers NOT to change without rerunning: all of them. Numbers that are
+% deliberately absent: any speedup attributed to D*. D* Lite IS now implemented
+% and shared by all three backends (planners/search.py on branch
+% Emmama/planner-test), and is measured SLOWER than Dijkstra here. See the note
+% in Section \ref{sec:stage2} and docs/search_reuse_results.md.
+
+% =====================================================================
+\begin{abstract}
+Robots in the RoboCup Small Size League replan whenever the world model
+changes, but a changed world model does not imply an invalid path. We separate
+the decision of \emph{when} to replan from the planner that carries it out, and
+evaluate a policy-driven, event-driven replanning layer across three roadmap
+backends: a probabilistic roadmap, a visibility graph, and a Voronoi roadmap.
+
+We first reproduce the dynamic replanning benchmark of da Silva Costa and
+Tonidandel. Their dynamic visibility graph replans 13.09 times per crossing;
+our visibility graph replans 13.37 times under the same trigger and scenario,
+which anchors the remainder of the study. We then replace their purely
+geometric trigger with three alternatives and evaluate all of them on 200
+paired samples per condition.
+
+Two results follow. Committing to the next two path segments, rather than
+invalidating a path whenever any obstacle approaches any part of it, reduces
+replanning by 15 to 35 per cent with no measurable cost in collisions, for
+every backend, in both scenarios, and at every obstacle speed from 0.5 to
+3.0~m/s. Projecting obstacle velocity 0.25~s ahead halves collisions below
+1.5~m/s but increases them above 2.0~m/s, which is the speed range in which
+matches are played; smoothing the velocity estimate does not remove this
+crossover.
+
+We further report a negative result relevant to any attempt to apply
+incremental heuristic search in this domain. On a recorded league match, 98.2
+per cent of visibility answers survive a replanning interval, yet only 0.4 per
+cent can be established as reusable without recomputing them, because the
+graph's vertices are the obstacles themselves. Measured separately, graph
+search accounts for 2.0 per cent of a visibility-graph call and 7.2 per cent of
+a Voronoi call. Implementing D* Lite and sharing it across all three backends
+confirms the bound directly: on recorded match play it returns identical paths
+but runs 1.29 to 1.96 times slower than rebuilding with Dijkstra, because the
+roadmaps replace 116 to 193 per cent of their vertex set between consecutive
+frames. Incremental repair in this setting must target roadmap construction,
+not search.
+\end{abstract}
+
+% =====================================================================
+% Contributions. Belongs at the end of the introduction, which lives in the
+% main draft rather than this file. Contribution 4 was previously the last
+% subsection of the results and read as a caveat; the measurement in
+% Table~\ref{tab:dstar} is strong enough to state as a result.
+\subsection{Contributions}
+
+\begin{enumerate}
+\item \textbf{A replicated baseline.} We reproduce the dynamic replanning
+benchmark of da Silva Costa and Tonidandel: their dynamic visibility graph
+replans 13.09 times per crossing, ours 13.37 times under the same trigger and
+scenario over 200 samples. Every subsequent claim is anchored on that
+agreement.
+
+\item \textbf{A replanning policy separable from the planner.} Deciding
+\emph{when} to replan is treated as a policy layer evaluated independently of
+the three backends. Committing to the next two path segments, rather than
+invalidating a path whenever any obstacle approaches any part of it, reduces
+replanning by 15 to 35 per cent with no measurable cost in collisions, for
+every backend, in both scenarios, and at every obstacle speed tested.
+
+\item \textbf{A bounded result for motion prediction.} Projecting obstacle
+velocity 0.25~s ahead halves collisions below 1.5~m/s and increases them above
+2.0~m/s, which is the range in which matches are played. We identify saturation
+of the trigger as the mechanism and show that smoothing the velocity estimate
+does not remove the crossover, so we report prediction as beneficial within a
+speed range rather than in general.
+
+\item \textbf{A negative result for incremental heuristic search in this
+domain, obtained by implementing it.} We implement D* Lite and share it across
+all three backends. It returns paths identical to a full rebuild on all 2418
+paired queries, to within $0.0000$~mm, and runs 1.29 to 1.96 times slower on
+recorded match play. The mechanism is roadmap churn: obstacle-vertex and
+tessellation roadmaps replace 116 to 193 per cent of their vertex set between
+consecutive camera frames, so no previous search tree survives to repair. A
+frozen-obstacle control returns 4 to 10 per cent churn and an 18 per cent
+speedup, which establishes that the domain rather than the implementation
+denies the saving. Since graph search is only 2.0 and 7.2 per cent of a
+planning call in any case, incremental repair in this setting must target
+roadmap construction.
+
+\item \textbf{A conditional recommendation.} The Voronoi roadmap dominates both
+alternatives under every event-driven trigger tested, replanning under a
+quarter as often as the visibility graph (3.09 against 13.37 recalculations per
+run) for 39 per cent of the collisions and a fifth of the planning time, and it
+is the only backend that fails under timer-driven
+replanning, reaching the goal in 17 of 200 runs at a 50~ms period. The best
+mapping is therefore usable only in combination with an event-driven policy,
+which is what makes the two halves of this study inseparable.
+\end{enumerate}
+
+% =====================================================================
+\subsection{Experimental Setup}
+\label{sec:setup}
+
+All experiments run on a Division B field, $9000 \times 6000$~mm, with a robot
+radius of 90~mm and a planning clearance of 30~mm, giving a Minkowski inflation
+radius of 210~mm from an obstacle centre. Control runs on a 50~ms tick, which
+is the period used by the execution layer of our framework and therefore the
+budget a planning call must fit inside.
+
+Scenarios are adapted from da Silva Costa and Tonidandel, whose field was
+$12 \times 9$~m; geometry is scaled by 0.75 in $x$ and 0.667 in $y$, while
+physical quantities (robot radius, clearance, the 90~mm invalidation
+threshold) are not scaled. Their obstacle coordinates are not published, so our
+reconstructions reproduce the arrangement each scenario is described as having
+rather than its exact pixels. We therefore treat the dynamic replanning count
+as the comparable quantity, since it depends on the crossing pattern rather
+than on precise positions, and treat the static tables as reproducing an
+internal pattern rather than absolute values.
+
+The three backends are a probabilistic roadmap with 40 milestones and $k=6$
+neighbours, a Minkowski-inflated visibility graph, and a Voronoi roadmap over a
+density grid of virtual sites. All three search through a single shared
+implementation of D* Lite, so differences in path quality are not confounded by
+differences in the search. The same module exposes \texttt{networkx} Dijkstra
+as an alternative backend, which we use as a paired control: over 2418 queries
+across all three roadmap types the two returned paths of identical length,
+maximum difference $0.0000$~mm. All three are invoked with the
+direct line-of-sight shortcut disabled, so every reported call reflects full
+roadmap construction rather than the fraction of queries that happen to have
+clear line of sight.
+
+Table~\ref{tab:metrics} lists every metric we report, its unit, and the
+value that would indicate no effect. The first five are the source study's own
+axes, retained in their units and statistics so that our rows are directly
+comparable with theirs; the remaining three are added rather than substituted,
+since replacing an inherited axis would cost that comparability.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{llll}
+\hline
+Metric & Unit & Null value & Source \\
+\hline
+Path length          & m                & straight line   & inherited \\
+Path safety          & m                & $0$             & inherited \\
+Planning time        & ms, med.\ and p95 & 50~ms tick      & inherited \\
+Paths recalculated   & count            & $13.09$         & inherited \\
+Collision episodes   & count per run    & $0$             & inherited \\
+Success rate         & arrived / trials & $200/200$       & added \\
+Build vs.\ search    & \% of one call   & $100/0$         & added \\
+Roadmap churn        & \% vertices/frame & $0$            & added \\
+\hline
+\end{tabular}
+\caption{Reported metrics. The null value is the reading that would indicate no
+effect, against which each measurement should be read. Paths recalculated is
+anchored on the source study's published figure rather than on zero, since it
+is the replication anchor. Collision episodes are always scored on true
+obstacle positions, never on the positions a trigger observed.}
+\label{tab:metrics}
+\end{table}
+
+Metrics follow the source study. In the static perspective we report
+computational time, path length, and path safety, defined as the sum of
+perpendicular distances from every obstacle to the path. In the dynamic
+perspective we report accumulated computational time, paths recalculated,
+navigation time, and collision episodes, counted on a rising edge so that
+sustained contact counts once.
+
+% =====================================================================
+\subsection{Stage 1: Baseline Planner Comparison}
+\label{sec:stage1}
+
+Stage 1 establishes what each backend does before any policy layer is added,
+and calibrates our harness against published results.
+
+\subsubsection{Static environment}
+
+% provenance: scripts/static_scenario.py --samples 200
+Table~\ref{tab:static} reports all four static scenarios at $n=200$. Every
+backend solved every instance in three of the four scenarios. Standard
+deviations of zero on path length and path safety indicate a deterministic
+planner, matching the behaviour of the dynamic visibility graph in the source
+study; only the probabilistic roadmap varies across samples.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{llrrr}
+\hline
+Scenario & Planner & Time (ms) & Length (m) & Safety (m) \\
+\hline
+Worst case, graph
+ & PRM        & 8.41  & 8.68 & 8.88 \\
+ & Visibility & 9.64  & \textbf{7.20} & 3.93 \\
+ & Voronoi    & \textbf{2.67}  & 9.48 & \textbf{13.55} \\
+\hline
+Worst case, sampling
+ & PRM        & 36.67 & 9.80 & 23.14 \\
+ & Visibility & 25.70 & \textbf{8.64} & 23.10 \\
+ & Voronoi    & \textbf{5.10}  & 9.63 & \textbf{27.88} \\
+\hline
+Mixed
+ & PRM        & 8.22  & 8.87 & 8.08 \\
+ & Visibility & 7.14  & \textbf{7.75} & 2.86 \\
+ & Voronoi    & \textbf{2.23}  & 10.48 & \textbf{13.25} \\
+\hline
+Game stoppage
+ & PRM        & 7.05  & 5.09 & 6.63 \\
+ & Visibility & 5.48  & \textbf{3.95} & 4.43 \\
+ & Voronoi    & \textbf{2.39}  & 6.20 & \textbf{9.48} \\
+\hline
+\end{tabular}
+\caption{Static scenarios, $n=200$. Times are not comparable with the source
+study, whose implementation is C++ on an i7 at 4.5~GHz against our Python;
+lengths and safeties are geometric and are comparable in pattern.}
+\label{tab:static}
+\end{table}
+
+The ordering is consistent and without exception. The visibility graph produces
+the shortest path in all four scenarios and the lowest path safety in all four.
+The Voronoi roadmap is its mirror image, producing the longest paths and three
+to five times the clearance. The probabilistic roadmap lies between the two on
+both measures. This reproduces the source study's finding that its graph
+planner outperformed its sampling planner on every metric except path safety,
+and extends that observation to a backend that occupies the opposite end of the
+same trade-off.
+
+The narrow-passage scenario is the one case where completeness separates the
+backends. The scenario places a barrier across the full field width with a
+single 380~mm corridor, so no route exists around it. The probabilistic roadmap
+failed to find a path in 25 of 200 attempts and exhibited both the highest mean
+time (36.67~ms) and the highest variance (standard deviation 21.80~ms, maximum
+116.73~ms). Neither deterministic backend failed. This is the expected
+narrow-passage weakness of sampling-based planning, and it is the reason a
+fixed sample budget is a poor fit for a workspace that can contain a corridor
+of that width.
+
+\subsubsection{Dynamic environment}
+
+% provenance: scripts/dynamic_scenario.py --samples 200,
+% trigger_sweep_n200_scenario_1.json, row trigger_geometric
+Table~\ref{tab:dynamic} reports the dynamic scenario under the source study's
+own trigger, in which a path is invalidated whenever any obstacle comes within
+90~mm of it.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\hline
+Planner & Replans & ms/replan & Nav (s) & Collisions \\
+\hline
+PRM        & 6.49  & 39.33 & 3.87 & 0.81 \\
+Visibility & 13.37 & 15.67 & \textbf{2.62} & 1.57 \\
+Voronoi    & \textbf{3.09}  & \textbf{14.09} & 4.40 & \textbf{0.61} \\
+\hline
+\multicolumn{5}{l}{\emph{Source study, dynamic visibility graph: 13.09 replans}} \\
+\hline
+\end{tabular}
+\caption{Dynamic scenario, seven moving obstacles at 1.0~m/s, $n=200$ paired
+samples, the source study's geometric trigger.}
+\label{tab:dynamic}
+\end{table}
+
+Our visibility graph replans 13.37 times per crossing against the 13.09
+reported for the source study's dynamic visibility graph under the same trigger
+and an equivalent scenario. We take this agreement as validating the harness,
+and report the remaining results relative to it.
+
+The static and dynamic results measure the same underlying property. The
+visibility graph replans 4.3 times more often than the Voronoi roadmap because
+its paths run close to obstacle boundaries, so a passing robot invalidates
+them; the Voronoi roadmap replans rarely because its paths occupy open space.
+Static path safety and dynamic replanning frequency are therefore two views of
+one property, and the Voronoi roadmap's longer paths buy both.
+
+Decomposing total planning cost into frequency and per-call cost shows that
+frequency dominates. The Voronoi roadmap's per-call cost is only 1.11 times
+lower than the visibility graph's (14.09~ms against 15.67~ms), while it replans
+4.3 times less often. Its advantage is therefore attributable to how often it
+is invoked rather than to how expensive each invocation is, which is what
+motivates Stage 2.
+
+% =====================================================================
+\subsection{Stage 2: Effect of the Policy and Event Layer}
+\label{sec:stage2}
+
+Stage 2 holds the backend fixed and varies the policy that decides when to
+replan. Four families are compared: the source study's geometric rule, a
+periodic rule that replans every $k$ ticks regardless of the world, a
+predictive rule that projects each obstacle along its measured velocity, and a
+near-field rule that applies the geometric test only to the next $K$ segments
+of the remaining path. Every rule sees the same 200 obstacle-phase draws, so
+differences between rows are attributable to the rule rather than to the
+sample.
+
+\subsubsection{Committing to the near field}
+
+% provenance: trigger_sweep_n200_scenario_1.json, near_field_2seg
+Table~\ref{tab:nearfield} reports the paired difference against the geometric
+trigger, with 95 per cent bootstrap confidence intervals over the paired
+differences.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrr}
+\hline
+Backend & $\Delta$ replans & $\Delta$ collisions \\
+\hline
+PRM        & $-0.94\ [-1.63, -0.27]$ & $-0.09\ [-0.21, +0.03]$ \\
+Visibility & $-1.53\ [-2.23, -0.87]$ & $+0.03\ [-0.06, +0.12]$ \\
+Voronoi    & $-0.56\ [-0.80, -0.33]$ & $-0.05\ [-0.17, +0.08]$ \\
+\hline
+\end{tabular}
+\caption{Near-field commitment over two segments against the geometric
+trigger, $n=200$ paired samples. Every replanning interval excludes zero;
+every collision interval includes it.}
+\label{tab:nearfield}
+\end{table}
+
+The result is consistent across all three backends and reproduces in the second
+dynamic scenario. Restricting the validity test to the part of the path the
+robot is about to drive removes replanning events caused by obstacles crossing
+a section the robot will not reach for seconds, by which time the obstacle has
+moved on. Committing to one segment rather than two reduces replanning further
+but costs the visibility graph measurably in collisions
+($+0.19\ [+0.04, +0.34]$), so two segments is the setting we report.
+
+This answers RQ1 directly: a policy layer that reasons about \emph{where} on
+the path a conflict lies, rather than only whether one exists, reduces
+planner invocations without degrading navigation safety.
+
+\subsubsection{Motion prediction and its operating range}
+
+% provenance: speed_sweep_noise23.json, PRM rows
+Projecting obstacle velocity forward addresses the complementary weakness,
+namely that a purely geometric test cannot see an obstacle moving toward the
+path. Its benefit is real but bounded. Table~\ref{tab:predictive} reports
+collision episodes against obstacle speed with 23~mm of per-frame measurement
+noise applied to what the trigger observes, matching the noise floor we measured
+on a recorded match. Collisions are always evaluated on true positions.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrr}
+\hline
+Obstacle speed (m/s) & Geometric & Predictive & Near-field \\
+\hline
+0.5 & 0.49 & \textbf{0.14} & 0.48 \\
+1.0 & 0.79 & \textbf{0.33} & 0.76 \\
+1.5 & 1.01 & 0.91 & \textbf{0.85} \\
+2.0 & 1.16 & 1.71 & 1.23 \\
+2.5 & 1.24 & 2.73 & \textbf{1.21} \\
+3.0 & 2.00 & 3.28 & \textbf{1.45} \\
+\hline
+\end{tabular}
+\caption{Collision episodes per run against obstacle speed, probabilistic
+roadmap, $n=100$ paired samples per cell, 23~mm measurement noise.}
+\label{tab:predictive}
+\end{table}
+
+Below 1.5~m/s prediction halves collisions. Above 2.0~m/s it increases them
+while replanning roughly four times as often. The mechanism is saturation: a
+0.25~s projection at 3~m/s sweeps 750~mm, so nearly every obstacle on the field
+satisfies the trigger, the robot replans almost continuously, and successive
+paths cross obstacles the previous path had already cleared. Smoothing the
+velocity estimate over five control ticks reduces replanning but does not
+remove the crossover, either with measurement noise or without it, so the
+effect is not attributable to a noisy velocity estimate.
+
+Since league robots exceed 2.5~m/s, we report motion prediction as beneficial
+within a bounded speed range rather than as a general improvement, and identify
+a speed-adaptive horizon as the natural next step.
+
+\subsubsection{Replanning frequency is not free}
+
+% provenance: trigger_sweep_n200_scenario_1.json, periodic rows
+Replanning on every control tick, which is the default behaviour of many
+navigation stacks including our own execution layer, is the worst policy
+measured. The probabilistic roadmap consumed 54.36~ms of planning per 50~ms
+control tick, exceeding the budget. The Voronoi roadmap reached the goal in
+only 17 of 200 runs.
+
+We attributed that failure to route switching, and the measurement says
+otherwise. Table~\ref{tab:stability} reports, at every replan, the angle between
+the direction the previous plan pointed and the direction its replacement
+points, both measured from where the robot stands, together with the mean
+distance between the two routes over their whole length. Under a 50~ms timer the
+Voronoi route moves 31~mm on average, less than a robot radius, while the
+commanded direction reverses on 57.1 per cent of replans. The robot is not
+choosing between different routes. It is being told to go left and then right
+around essentially the same corridor, twenty times a second, and makes no
+progress.
+% provenance: scripts/report_stability.py --samples 40 --workers 8
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrrrrr}
+\hline
+Trigger & Arrived & Replans & Turn ($^\circ$) & Rev.\ (\%) & Rev./run & Shift (mm) \\
+\hline
+Near-field 2 seg & 200/200 &   2.5 & 81.3 & 41.6 & \textbf{0.5} & 508 \\
+Geometric        & 200/200 &   3.1 & 73.8 & 35.5 & \textbf{0.6} & 472 \\
+Predictive 0.25s & 200/200 &   6.6 & 42.0 & 17.8 & \textbf{1.0} & 280 \\
+Predictive 1.00s & 200/200 &  35.5 & 31.3 & 14.5 & \textbf{5.0} & 118 \\
+Periodic 500~ms  & 172/200 &  29.9 & 93.7 & 51.6 & 14.7 & 172 \\
+Periodic 200~ms  &  20/200 & 139.0 & 96.7 & 55.3 & 75.9 &  84 \\
+Periodic 50~ms   &  17/200 & 559.1 & 95.2 & 57.1 & 318.6 &  31 \\
+\hline
+\end{tabular}
+\caption{Path stability of the Voronoi roadmap, scenario 1, $n=200$; scenario 2
+reproduces the same ordering and is reported in the text. Turn is the
+mean angle between consecutive plans measured from the robot's position;
+reversals are replans turning more than $90^\circ$, which command the robot back
+the way it came; shift is the mean distance between consecutive routes over
+their whole length. Reversals per run, not the reversal rate and not the replan
+count, is what tracks arrival: every trigger at or below 5.0 arrives in all 200
+runs and every trigger at or above 14.7 fails.}
+\label{tab:stability}
+\end{table}
+
+Neither the reversal rate nor the replan count explains the failure on its own,
+which is why we report the per-run product of the two. The Voronoi roadmap
+reverses on roughly half its replans under the near-field trigger as well, yet
+it replans only 2.5 times per run there and arrives in all 200. The decisive
+comparison is the pair in the middle of the table: a 1.00~s predictive trigger
+replans 35.5 times per run and arrives in every one of 200, while a 500~ms timer
+replans fewer times, 29.9, and fails in 28. Replanning often is not what breaks
+the robot. Reversing often is.
+
+Scenario 2, with five obstacles rather than seven, reproduces all of it. Its
+Voronoi rows arrive in all 200 runs under every event-driven trigger and fail
+under every timer, and the same predictive-against-periodic pair is starker
+there: a 1.00~s prediction replans 42.5 times per run and arrives in every one
+of 200, while a 500~ms timer replans 30.2 times and fails in 32. Pooling the 22
+Voronoi conditions across both scenarios, every condition that arrives in all
+200 runs sits at or below 5.9 reversals per run and every condition that fails
+sits at or above 14.7. Nothing lands between the two, so the separation is not
+an artefact of where we drew a line.
+
+The shift column rules out the explanation we had been giving. If the failure
+were route switching, the failing runs would show the largest changes of route.
+They show the smallest. The near-field trigger moves the route 508~mm per replan
+and arrives every time; the 50~ms timer moves it 31~mm and arrives 17 times in
+200. What the timer changes is not which way round an obstacle to go but which
+side of an almost unchanged corridor to be on, and it changes it twenty times a
+second.
+
+The visibility graph is the stable backend, reversing on 0.0 to 1.4 per cent of
+replans under every trigger in both scenarios. Its instability and the Voronoi roadmap's
+come from the same property that gives each its character. A shortest path
+through a visibility graph is essentially unique, so replanning from a slightly
+advanced position returns the same route. A Voronoi diagram's edges are
+equidistant from their two nearest obstacles by construction, which is what
+buys the clearance reported in Section~\ref{sec:stage1}, and it also leaves many
+routes of near-equal cost for a small change in the start position to choose
+between.
+
+Both failures are absent under every event-driven policy tested, including the
+source study's.
+
+\subsubsection{On incremental search in this domain}
+
+Our framework description proposes reusing the previous solution rather than
+rebuilding it. We report two measurements that bound what such reuse can
+achieve here, because both are negative and both are useful.
+
+First, reuse is largely unprovable on obstacle-vertex roadmaps. On a recorded
+league match, comparing two planning queries 500~ms apart, 98.2 per cent of
+visibility answers were unchanged, but only 0.4 per cent could be established as
+reusable by a sound test. The cause is structural: a visibility graph's
+vertices are the inflated obstacle corners, so an obstacle that moves at all
+displaces every vertex it owns and every edge incident to them. A Voronoi
+roadmap built on a fixed backbone of virtual sites is markedly better behaved,
+retaining 70.9 per cent of its edges when all obstacles move 500~mm, because
+obstacle motion perturbs the diagram locally.
+
+Second, graph search is not where the cost lies. Measured separately on an
+eight-obstacle scene, roadmap construction accounts for 98.0 per cent of a
+visibility-graph call (29.94~ms of 30.54~ms) and 92.8 per cent of a Voronoi call
+(7.67~ms of 8.26~ms). Incremental heuristic search of the D* and LPA* family
+reuses the search tree, so its available saving is bounded by 2.0 and 7.2 per
+cent respectively, irrespective of implementation quality.
+
+Third, we implemented it and measured it. All three backends share one D* Lite,
+which identifies a vertex by its quantised position rather than by the label its
+own roadmap assigns, since a tessellation index does not denote the same point
+from one query to the next. Table~\ref{tab:dstar} reports 421 frames of a
+recorded league match replayed through the vision pipeline, with the two search
+backends alternated over five repeats and the medians taken.
+
+% provenance: scripts/measure_search_reuse.py --source log --repeats 5
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\hline
+Backend & Vertices & Churn (\%) & D* Lite (ms) & Dijkstra (ms) \\
+\hline
+Visibility & 66.0 & 192.5 & 2.226 & \textbf{1.135} \\
+PRM        & 18.5 &  14.7 & 0.479 & \textbf{0.371} \\
+Voronoi    & 41.3 & 116.0 & 0.754 & \textbf{0.446} \\
+\hline
+\end{tabular}
+\caption{Search cost per query on 421 frames of recorded match play, five
+alternating repeats, medians. Churn is the percentage of the roadmap's vertex
+set added or removed between consecutive frames; above 100 per cent the previous
+search tree describes a graph that no longer exists. Both backends returned
+paths of identical length on every frame.}
+\label{tab:dstar}
+\end{table}
+
+D* Lite is between 1.29 and 1.96 times slower than rebuilding with Dijkstra. The
+mechanism is in the churn column. A visibility graph replaces 192.5 per cent of
+its vertex set per frame and a Voronoi roadmap 116.0 per cent, so the repair
+must diff a graph that has been almost entirely replaced. Only the probabilistic
+roadmap retains its vertices (14.7 per cent churn), because its milestones are
+drawn from a fixed seed and therefore do not move with the obstacles at all; at
+18.5 vertices, however, the incremental bookkeeping exceeds the search it
+replaces. A control in which obstacles are held stationary and only the robot
+moves gives 4 to 10 per cent churn, one vertex expanded per repair, and D* Lite
+18 per cent faster on the visibility graph, which confirms that the
+implementation reuses correctly and that the domain, not the implementation, is
+what denies the saving.
+
+We therefore do not claim a speedup from incremental search, and report the
+measurement above as evidence that none is available on obstacle-vertex or
+tessellation roadmaps at league obstacle speeds. What the shared search does buy
+is attribution: with the search held identical across the three backends, every
+difference reported in Section~\ref{sec:stage1} is a difference in mapping.
+Incremental repair in this domain must instead target roadmap construction, and
+a Voronoi roadmap on a fixed site backbone is the only one of our three backends
+whose structure could make such repair tractable.
+
+That backbone is not, however, the configuration we measured. Our Voronoi
+planner places its virtual sites by obstacle density, so the site set moves with
+the obstacles and the tessellation is rebuilt in full on every query; every
+Voronoi number in this paper is that configuration. Switching to a fixed lattice
+at its default spacing of twice the clearance radius, 240~mm, yields 966 nodes
+and 1841 edges and takes 4.48~s to build against 34 nodes, 53 edges and 2.2~ms
+for the density-placed sites, on the same eight-obstacle scene. A fixed backbone
+is therefore affordable only at much coarser spacing: 900~mm gives 116 nodes at
+27.5~ms and 1200~mm gives 83 nodes at 11.3~ms, both inside the 50~ms control
+tick.
+
+A lattice three times coarser than the 420~mm gaps robots pass through might be
+expected to lose them, so we measured it. A wall of robots spans the pitch with
+one gap in it, so a route from one side to the other either passes through that
+gap or does not exist; we sweep the gap width and, because a lattice has a
+period, the position of the gap as well. Ground truth needs no planner: a gap
+admits a robot exactly when the two robots flanking it are $2 \times 210 =
+420$~mm apart or more.
+
+A 1200~mm lattice resolved every passable gap at every position tested, 84 of
+84, down to 420~mm exactly, and returned no path through any gap narrower than
+that. Its clearance was half the gap width in every case, confirming that the
+roadmap runs down the centre of the gap as the construction intends. Coarseness
+is therefore not the limitation, and on this test it is an advantage: a 600~mm
+lattice missed 16 of 84, and missed only at gap positions that were not
+multiples of its own spacing, which is aliasing. A 600~mm lattice also places 10
+to 14 roadmap vertices within 700~mm of the gap against 4 to 6 for a 1200~mm
+lattice, so the local diagram is shaped by virtual sites rather than by the two
+robots forming the gap; we report that as consistent with the aliasing rather
+than as its established cause.
+
+Two qualifications. At 420~mm exactly the corridor has zero width and the
+returned path clears obstacle centres by exactly 210.0~mm, which is legal and
+has no margin at all; against the 23~mm of measurement noise reported in
+Section~\ref{sec:stage2} it is not a route worth taking. The visibility graph
+refuses that case and solves every gap from 430~mm upward, which is the more
+conservative and arguably the more useful behaviour. What we have established is
+that a coarse fixed lattice can represent these gaps, not that a planner should
+drive through the tightest of them.
+
+That leaves the property the whole argument rests on: whether a fixed backbone
+holds the roadmap still while obstacles move. Table~\ref{tab:lattice} says it
+does not. Replacing density placement with a 900~mm lattice halves the churn
+ratio, 116 to 54 per cent, which is what the argument predicts and would be
+encouraging if the ratio were the quantity of interest. It is not. Churn is
+$(\mathrm{added} + \mathrm{removed}) / \mathrm{total}$, and the count of
+vertices that actually change per frame moves the other way, from 47.9 to 64.2.
+The lattice does not stabilise the roadmap; it surrounds an equally unstable
+core with more stable virtual vertices, so only the denominator moves. The count
+rises rather than merely holding flat because each obstacle now has more
+neighbouring sites to form vertices against, so moving one displaces more of
+them.
+
+% provenance: scripts/measure_search_reuse.py --voronoi-placement grid --voronoi-spacing
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrrrr}
+\hline
+Site placement & Nodes & Churn (\%) & Changed & D* (ms) & Rebuild (ms) \\
+\hline
+Density        &  41.3 & 116.0 & \textbf{47.9} & 0.249 & \textbf{0.135} \\
+Lattice 1200~mm &  83.9 &  73.9 & \textbf{62.0} & 0.533 & \textbf{0.265} \\
+Lattice 900~mm & 118.5 &  54.2 & \textbf{64.2} & 0.627 & \textbf{0.375} \\
+\hline
+\end{tabular}
+\caption{Voronoi roadmap stability under real match motion, 421 frames.
+\emph{Changed} is the number of vertices added or removed per frame; churn is
+the same quantity divided by the roadmap size. A fixed lattice lowers the ratio
+and raises the count, so the apparent gain is a denominator effect. Rebuild is
+Dijkstra from scratch, and beats incremental repair in every configuration.}
+\label{tab:lattice}
+\end{table}
+
+Every other cost moves the wrong way as well. Absolute search time rises from
+0.249 to 0.627~ms as the graph grows threefold, roadmap construction rises from
+2.2 to 27.5~ms, and D* Lite remains between 1.67 and 2.01 times slower than a
+full rebuild throughout, with no trend toward parity as the lattice tightens.
+We therefore withdraw the suggestion rather than leave it as future work: a
+fixed site backbone is the one structure that might have made incremental repair
+worthwhile in this domain, and it does not hold the roadmap still.

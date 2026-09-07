@@ -1,0 +1,61 @@
+
+scenario_2 (5 obstacles) - 200 samples, obstacles at 1.0 m/s, robot at 1.5 m/s
+
+trigger                   planner         arrived  replans  turn deg  reversals  rev/run  shift mm   p95 mm
+-----------------------------------------------------------------------------------------------------------
+trigger_geometric         PRM            200/200       8.7      58.2      20.1%      0.5       377      531
+trigger_geometric         VisibilityGraph 200/200      11.2      20.8       0.2%      0.0       111      149
+trigger_geometric         Voronoi        200/200       4.2      73.2      33.5%      0.9       494      686
+
+periodic_50ms             PRM            200/200      62.8      35.4      12.6%      6.7       257      829
+periodic_50ms             VisibilityGraph 200/200      53.8       3.2       0.1%      0.0        15       54
+periodic_50ms             Voronoi          1/200     597.3      99.3      60.6%    361.1        28      113
+
+periodic_200ms            PRM            200/200      21.4      39.5      14.5%      1.8       250      718
+periodic_200ms            VisibilityGraph 200/200      17.9       7.9       0.0%      0.0        38      126
+periodic_200ms            Voronoi          5/200     147.4     102.8      61.5%     89.5        80      343
+
+periodic_500ms            PRM            200/200      10.5      47.3      13.8%      0.7       257      526
+periodic_500ms            VisibilityGraph 200/200       8.2       6.1       0.0%      0.0        31       70
+periodic_500ms            Voronoi        168/200      30.2      95.4      54.4%     15.7       163      479
+
+geometric+periodic_500ms  PRM            200/200      13.7      48.6      17.5%      1.1       292      611
+geometric+periodic_500ms  VisibilityGraph 200/200      13.7      14.1       0.1%      0.0        72      143
+geometric+periodic_500ms  Voronoi        164/200      33.4      94.1      53.9%     17.1       174      526
+
+predictive_0.25s          PRM            200/200      14.3      48.8      18.6%      1.7       334      759
+predictive_0.25s          VisibilityGraph 200/200      27.9       7.0       0.2%      0.0        36      163
+predictive_0.25s          Voronoi        200/200       9.3      38.6      16.3%      1.3       261      718
+
+predictive_0.50s          PRM            200/200      21.6      43.7      16.3%      2.6       311      803
+predictive_0.50s          VisibilityGraph 200/200      34.4       5.0       0.2%      0.0        25      126
+predictive_0.50s          Voronoi        200/200      17.6      29.3      12.8%      2.1       157      684
+
+predictive_1.00s          PRM            200/200      35.4      41.8      14.7%      4.1       302      814
+predictive_1.00s          VisibilityGraph 200/200      36.8       4.7       0.2%      0.0        24      118
+predictive_1.00s          Voronoi        200/200      42.5      29.8      14.4%      5.9       107      580
+
+predictive_0.25s_smooth5  PRM            200/200      14.4      45.5      15.5%      1.4       315      727
+predictive_0.25s_smooth5  VisibilityGraph 200/200      25.9       7.6       0.3%      0.0        37      167
+predictive_0.25s_smooth5  Voronoi        200/200       8.5      40.3      17.8%      1.3       268      706
+
+near_field_1seg           PRM            200/200       6.3      58.4      20.6%      0.2       327      412
+near_field_1seg           VisibilityGraph 200/200       8.6      19.6       0.0%      0.0       101      121
+near_field_1seg           Voronoi        200/200       3.0      88.7      43.9%      0.6       464      613
+
+near_field_2seg           PRM            200/200       7.4      55.1      17.1%      0.4       333      450
+near_field_2seg           VisibilityGraph 200/200      10.0      22.3       0.6%      0.0       109      145
+near_field_2seg           Voronoi        200/200       3.4      76.5      35.0%      0.7       483      643
+
+turn deg  = angle between the direction the old plan pointed and the
+            direction the replacement points, from where the robot is.
+            0 means the replan did not change the next move.
+reversals = share of replans turning more than 90 degrees, so the new
+            plan sends the robot back the way it came.
+rev/run   = reversals per run. This is the one that tracks arrival:
+            the rate alone does not, because a planner that reverses
+            half the time but replans three times per run reverses
+            once or twice in total and still gets there.
+shift mm  = mean distance between the old route and the new one over
+            their whole length. 0 means the route did not move.
+Both read 0 for a robot that never changes its mind.
