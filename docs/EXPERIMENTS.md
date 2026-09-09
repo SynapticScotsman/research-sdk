@@ -38,6 +38,15 @@ networking, so multicast does not reach Windows, and the fix needs Windows 11.
 | Voronoi build cost by lattice spacing | `probe_voronoi_sites.py` | `<repo root>` |
 | Planning load on the UI thread | `benchmark_ui_load.py` | (no arguments needed) |
 | Watch it run in grSim | `drive_grsim.py` | `--planner voronoi --duration 120` |
+| Fetch the match log those need | `fetch_match_log.sh` | `bash scripts/fetch_match_log.sh` |
+
+## The match log
+
+Two measurements replay a recorded game rather than a synthetic scene, because
+roadmap churn is a property of how robots actually move. `fetch_match_log.sh`
+downloads it, checks the gzip and the `SSL_LOG_FILE` header, and prints the path
+to pass as `--log`. It lands in `$HOME/ssl-gamelogs`, not the repo: 159 MB in a
+OneDrive working copy would sync forever.
 
 ## Scenarios and triggers
 
