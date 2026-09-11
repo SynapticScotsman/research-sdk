@@ -38,6 +38,8 @@ networking, so multicast does not reach Windows, and the fix needs Windows 11.
 | Voronoi build cost by lattice spacing | `probe_voronoi_sites.py` | `<repo root>` |
 | Planning load on the UI thread | `benchmark_ui_load.py` | (no arguments needed) |
 | Watch it run in grSim | `drive_grsim.py` | `--planner voronoi --duration 120` |
+| Closed-loop validation, 6v6, real opponents | `drive_grsim.py` | `--robots 6 --obstacles 6 --opponents log --log LOG --out-json OUT` |
+| Turn grSim's idealisations off first | `set_grsim_realism.sh` | `bash scripts/set_grsim_realism.sh` |
 | Fetch the match log those need | `fetch_match_log.sh` | `bash scripts/fetch_match_log.sh` |
 
 ## The match log
@@ -100,6 +102,46 @@ or `--planner prm`. `--trigger periodic --period-ms 50` reproduces the failure
 where the Voronoi roadmap dithers and stops arriving.
 
 Replans, reversals, planning time and closest approach print every two seconds.
+
+## The closed-loop tier
+
+Everything above is offline and headless. grSim is not a fourth experiment; it
+is the validity check on the offline ones. Offline the robot is exactly on its
+path every tick, which is the assumption behind the collision counts and the
+whole path-stability result. grSim breaks that assumption and says whether the
+ordering survives.
+
+Two things make a grSim run worth quoting.
+
+**Turn the idealisations off.** Out of the box grSim reports exact positions
+with zero latency, which is the same perfect world model the offline runs
+assume, so a run against it cannot falsify anything. `set_grsim_realism.sh`
+sets both from the match log rather than from a plausible default: 23 mm
+position noise, measured as frame-to-frame jitter, and 9 ms sending delay, the
+median of `t_sent - t_capture` over 4000 detection frames (p95 10.2, max 19.7).
+grSim ships with 3 mm and 0 ms. Restart grSim afterwards; it reads the config
+once at startup.
+
+**Use real opponents.** `--opponents log` replays a recorded Division B match
+into grSim's yellow team, frame by frame, through the same reader the offline
+churn measurements use. They are placed rather than driven: these are a
+recorded obstacle field, not simulated agents, so teleporting reproduces the
+recorded trajectories exactly where a controller chasing them would add its own
+tracking error. It also avoids synthetic motion, which failed twice on this
+project and produced jitter in place rather than travel.
+
+```
+bash scripts/set_grsim_realism.sh
+python scripts/drive_grsim.py --planner voronoi --robots 6 --obstacles 6     --opponents log --log ~/ssl-gamelogs/MATCH.log.gz --out-json voronoi.json
+```
+
+Real time, so budget one wall-clock second per simulated second and about
+twenty runs per condition rather than 200. The point is agreement with the
+offline ordering, not higher confidence in the offline numbers.
+
+Read `replans` and `direct` together. A call returning no waypoints saw a clear
+line to the goal and built no roadmap; counting those as replans reported ~550
+per 30 s, one per control tick, which counts sightlines rather than planning.
 
 ## One thing that will bite you
 
