@@ -64,6 +64,7 @@ CONTROL_TICK_S = 0.05        # ui/execution/page.py's own execution timer
 # the latest command and zeroes it after command_ttl_s of silence.
 COMMAND_HZ = 100.0
 ARRIVED_MM = 150.0           # close enough to call it, and to turn around
+TRACK_EVERY = 5              # sample trajectories every 5th tick, 4 Hz
 CONTACT_MM = 2 * DEFAULT_ROBOT_RADIUS_MM   # centre distance at which robots touch
 INVALIDATION_MM = 90.0       # the source study's replan trigger threshold
 
@@ -113,6 +114,10 @@ class Robot:
     plan_ms_total: float = 0.0
     laps: int = 0
     closest_mm: float = float("inf")
+    # Sampled, not every tick: 30 s at 20 Hz is 600 points per robot and the
+    # figure needs shape, not resolution. Written to --out-json so a run can be
+    # drawn afterwards without rerunning it.
+    track: list = field(default_factory=list)
 
 
 def rotate_into_robot_frame(ex: float, ey: float, theta: float) -> tuple[float, float]:
@@ -280,8 +285,12 @@ class LogOpponents:
         if not self.keys:
             raise SystemExit(f"no {team} robots found in the clip")
 
-        self.holds = 0          # frames where a robot was missing and was held
+        # holds counts ROBOT placements, not frames: one frame missing two
+        # robots adds two. The denominator is robot_placements, not placements,
+        # and dividing by the wrong one turned 5.1% into 30.9% once already.
+        self.holds = 0
         self.placements = 0
+        self.robot_placements = 0
         self._last: dict[tuple[bool, int], tuple[float, float]] = {}
 
     def frame_at(self, elapsed_s: float):
@@ -316,6 +325,7 @@ class LogOpponents:
                            "orientation": 0.0, "robot_id": slot, "isYellow": True})
         if robots:
             self.placements += 1
+            self.robot_placements += len(robots)
             sender.send_packet(grSimPacketFactory.scenario_replacement_command(robots))
 
 
@@ -529,6 +539,7 @@ def main() -> int:
     started = time.time()
     last_report = 0.0
     ticks = 0
+    obstacle_track: list = []
 
     try:
         while time.time() - started < args.duration:
@@ -539,6 +550,12 @@ def main() -> int:
                 drive_obstacles(dispatcher, vision, args.obstacles)
             else:
                 opponents.place(sender, time.time() - started)
+                if ticks % TRACK_EVERY == 0:
+                    obstacle_track.append([
+                        [round(p[0], 1), round(p[1], 1)]
+                        for p in (vision.yellow.get(i, (None, None, 0))[:2]
+                                  for i in range(args.obstacles))
+                        if p[0] is not None])
 
             for robot in robots:
                 pose = vision.blue.get(robot.robot_id)
@@ -546,6 +563,9 @@ def main() -> int:
                     continue
                 x, y, theta = pose
                 here = (x, y)
+
+                if ticks % TRACK_EVERY == 0:
+                    robot.track.append([round(x, 1), round(y, 1)])
 
                 if math.dist(here, robot.target) <= ARRIVED_MM:
                     robot.laps += 1
@@ -651,7 +671,11 @@ def main() -> int:
                               "robot_id": r, "coverage": opponents.coverage[(y, r)]}
                              for i, (y, r) in enumerate(opponents.keys)],
                          "placements": opponents.placements,
+                         "robot_placements": opponents.robot_placements,
                          "held_positions": opponents.holds,
+                         "held_fraction_of_robot_placements":
+                             opponents.holds / max(opponents.robot_placements, 1),
+                         "obstacle_track": obstacle_track,
                      }},
             "robots": [
                 {"robot_id": r.robot_id, "laps": r.laps, "replans": r.replans, "direct": r.direct,
@@ -660,7 +684,7 @@ def main() -> int:
                  "mean_heading_deg": r.stability.mean_heading_deg,
                  "mean_shift_mm": r.stability.mean_shift_mm,
                  "mean_plan_ms": r.plan_ms_total / max(r.replans + r.direct, 1),
-                 "closest_mm": r.closest_mm}
+                 "closest_mm": r.closest_mm, "track": r.track}
                 for r in robots],
         }, indent=1), encoding="utf-8")
         print(f"wrote {args.out_json}")
