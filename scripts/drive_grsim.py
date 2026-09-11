@@ -245,7 +245,7 @@ class LogOpponents:
     """
 
     def __init__(self, log_path: str, seconds: float, skip_seconds: float,
-                 count: int) -> None:
+                 count: int, team: str = "yellow") -> None:
         from measure_graph_churn import capture_from_logfile
 
         self.captures = capture_from_logfile(
@@ -253,24 +253,70 @@ class LogOpponents:
         )
         if not self.captures:
             raise SystemExit(f"no frames read from {log_path}")
-        self.count = count
         span = self.captures[-1].t_s - self.captures[0].t_s
         self.hz = len(self.captures) / span if span > 0 else 60.0
 
-    def frame_at(self, elapsed_s: float) -> tuple:
-        """Recorded obstacles at `elapsed_s` in, looping when the clip ends."""
+        # Choose WHICH recorded robots to replay, by identity, once. Vision
+        # drops robots intermittently: in a 30 s clip the frame carries 8, 9, 10
+        # or 11 obstacles and each robot is present in 80 to 100 per cent of
+        # frames. An earlier version took `obstacles[:count]` and numbered them
+        # by list position, so a robot vanishing for one frame shifted every
+        # later slot down by one and the grSim robot in that slot jumped to a
+        # different real robot. Measured on this clip: apparent slot speeds of
+        # 41 and 57 m/s, against 0.96 to 3.46 m/s for the same robots tracked by
+        # identity. This is the mistake `measure_graph_churn.py` documents for
+        # edge labels, in a second place.
+        want_yellow = team != "blue"
+        seen: dict[tuple[bool, int], int] = {}
+        for cap in self.captures:
+            for o in cap.obstacles:
+                key = (bool(o.isYellow), int(o.robot_id))
+                if key[0] is want_yellow:
+                    seen[key] = seen.get(key, 0) + 1
+        # Most consistently tracked first: a robot present in half the frames
+        # spends the other half held at a stale position.
+        self.keys = sorted(seen, key=lambda k: (-seen[k], k[1]))[:count]
+        self.coverage = {k: seen[k] / len(self.captures) for k in self.keys}
+        if not self.keys:
+            raise SystemExit(f"no {team} robots found in the clip")
+
+        self.holds = 0          # frames where a robot was missing and was held
+        self.placements = 0
+        self._last: dict[tuple[bool, int], tuple[float, float]] = {}
+
+    def frame_at(self, elapsed_s: float):
+        """The recorded frame at `elapsed_s` in, looping when the clip ends.
+
+        Resampled at the clip's MEAN rate, so this is not a timestamp-accurate
+        replay: real gaps in the recording are evened out, and the clip restarts
+        with a positional discontinuity once `elapsed_s` exceeds its length.
+        """
         i = int(elapsed_s * self.hz) % len(self.captures)
         return self.captures[i].obstacles
 
     def place(self, sender: grSimSender, elapsed_s: float) -> None:
-        obstacles = self.frame_at(elapsed_s)[: self.count]
-        if not obstacles:
-            return
-        sender.send_packet(grSimPacketFactory.scenario_replacement_command([
-            {"x": o.pos_mm[0] / 1000.0, "y": o.pos_mm[1] / 1000.0,
-             "orientation": 0.0, "robot_id": i, "isYellow": True}
-            for i, o in enumerate(obstacles)
-        ]))
+        present = {
+            (bool(o.isYellow), int(o.robot_id)): o.pos_mm
+            for o in self.frame_at(elapsed_s)
+        }
+        robots = []
+        for slot, key in enumerate(self.keys):
+            pos = present.get(key)
+            if pos is None:
+                # Hold the last known position rather than shifting slots. A
+                # held obstacle is stale, not teleported, and the count is
+                # reported so a run with many holds can be discarded.
+                pos = self._last.get(key)
+                if pos is None:
+                    continue
+                self.holds += 1
+            else:
+                self._last[key] = pos
+            robots.append({"x": pos[0] / 1000.0, "y": pos[1] / 1000.0,
+                           "orientation": 0.0, "robot_id": slot, "isYellow": True})
+        if robots:
+            self.placements += 1
+            sender.send_packet(grSimPacketFactory.scenario_replacement_command(robots))
 
 
 def place_teams(sender: grSimSender, blue: int, yellow: int) -> None:
@@ -306,6 +352,74 @@ def drive_obstacles(dispatcher: RobotCommandDispatcher, vision: Vision, yellow: 
         dispatcher.publish(
             RobotCommand(robot_id=rid, vx=vx, vy=vy, w=0.0, isYellow=True)
         )
+
+
+def run_provenance() -> dict:
+    """Code revision and the grSim realism condition, recorded with the result.
+
+    A results file that does not say which revision produced it, or whether the
+    simulator was reporting exact positions, cannot be compared against another
+    one later. Both are cheap to read and easy to forget.
+    """
+    import re
+    import subprocess
+
+    out: dict = {}
+    try:
+        out["git_revision"] = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(HERE.parent),
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip() or None
+        out["git_dirty"] = bool(subprocess.run(
+            ["git", "status", "--porcelain"], cwd=str(HERE.parent),
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip())
+    except Exception:  # noqa: BLE001 - provenance must never fail a run
+        out["git_revision"] = None
+
+    if not out.get("git_revision"):
+        # git did not answer, so its "clean" verdict is absence of output rather
+        # than evidence. Say unknown instead of claiming a clean tree.
+        out["git_dirty"] = None
+        # This checkout is a git worktree whose .git file records the main
+        # repository by WINDOWS path. Run from WSL, `git rev-parse` fails with
+        # "not a git repository: /mnt/c/.../C:/Users/...", because git joins the
+        # recorded absolute path onto the current directory. Read HEAD directly
+        # instead, translating a drive letter to its /mnt mount point.
+        try:
+            dot_git = HERE.parent / ".git"
+            head_dir = dot_git
+            if dot_git.is_file():
+                recorded = dot_git.read_text(encoding="utf-8").split("gitdir:", 1)[1].strip()
+                if len(recorded) > 2 and recorded[1] == ":":
+                    recorded = f"/mnt/{recorded[0].lower()}{recorded[2:]}"
+                head_dir = Path(recorded.replace("\\", "/"))
+            head = (head_dir / "HEAD").read_text(encoding="utf-8").strip()
+            if head.startswith("ref:"):
+                ref = head.split(None, 1)[1]
+                common = head_dir.parent.parent if head_dir.name.startswith("research") else head_dir
+                for candidate in (head_dir / ref, common / ref):
+                    if candidate.exists():
+                        head = candidate.read_text(encoding="utf-8").strip()
+                        break
+            out["git_revision"] = head if len(head) == 40 else None
+            out["git_revision_source"] = "HEAD file, git command unavailable here"
+        except Exception:  # noqa: BLE001
+            out["git_revision"] = None
+
+    cfg = Path.home() / ".grsim.xml"
+    grsim: dict = {"config": str(cfg)}
+    if cfg.exists():
+        xml = cfg.read_text(encoding="utf-8", errors="replace")
+        for key, label in (("Noise", "noise_enabled"),
+                           ("Deviation for x values", "noise_x_mm"),
+                           ("Deviation for y values", "noise_y_mm"),
+                           ("Sending delay (milliseconds)", "sending_delay_ms")):
+            m = re.search(r'<Var name="%s"[^>]*>\s*([^<\s]+)' % re.escape(key), xml)
+            grsim[label] = m.group(1) if m else None
+    out["grsim"] = grsim
+    out["command"] = " ".join(sys.argv)
+    return out
 
 
 def selftest() -> int:
@@ -365,6 +479,10 @@ def main() -> int:
     parser.add_argument("--log", help="Match log for --opponents log")
     parser.add_argument("--log-seconds", type=float, default=60.0)
     parser.add_argument("--log-skip", type=float, default=180.0)
+    parser.add_argument("--replay-team", choices=("yellow", "blue"), default="yellow",
+                        help="Which recorded team to replay into grSim's yellow "
+                             "slots. Selection is by robot identity, not list "
+                             "position; see LogOpponents.")
     parser.add_argument("--out-json", help="Write the per-robot results here")
     parser.add_argument("--no-place", action="store_true",
                         help="Leave the robots where they are")
@@ -379,9 +497,13 @@ def main() -> int:
         if not args.log:
             parser.error("--opponents log needs --log PATH")
         opponents = LogOpponents(args.log, args.log_seconds, args.log_skip,
-                                 args.obstacles)
+                                 args.obstacles, team=args.replay_team)
         print(f"replaying {len(opponents.captures)} frames at "
-              f"{opponents.hz:.0f} Hz from {Path(args.log).name}")
+              f"{opponents.hz:.0f} Hz mean from {Path(args.log).name}, "
+              f"clip {args.log_skip:.0f}-{args.log_skip + args.log_seconds:.0f} s")
+        print("  recorded robots: " + ", ".join(
+            f"{'Y' if y else 'B'}{r} into slot {i} ({opponents.coverage[(y, r)] * 100:.0f}% of frames)"
+            for i, (y, r) in enumerate(opponents.keys)))
 
     vision = Vision()
     sender = grSimSender()
@@ -514,10 +636,23 @@ def main() -> int:
     if args.out_json:
         import json
         Path(args.out_json).write_text(json.dumps({
+            "provenance": run_provenance(),
             "meta": {"planner": args.planner, "robots": args.robots,
                      "obstacles": args.obstacles, "speed_mps": args.speed,
                      "trigger": args.trigger, "duration_s": args.duration,
-                     "opponents": args.opponents, "log": args.log},
+                     "opponents": args.opponents, "log": args.log,
+                     "replay_team": args.replay_team,
+                     "log_skip_s": args.log_skip, "log_seconds": args.log_seconds,
+                     "replay": None if opponents is None else {
+                         "frames": len(opponents.captures),
+                         "mean_hz": opponents.hz,
+                         "robots": [
+                             {"slot": i, "recorded": ("yellow" if y else "blue"),
+                              "robot_id": r, "coverage": opponents.coverage[(y, r)]}
+                             for i, (y, r) in enumerate(opponents.keys)],
+                         "placements": opponents.placements,
+                         "held_positions": opponents.holds,
+                     }},
             "robots": [
                 {"robot_id": r.robot_id, "laps": r.laps, "replans": r.replans, "direct": r.direct,
                  "reversals": r.stability.reversals,
