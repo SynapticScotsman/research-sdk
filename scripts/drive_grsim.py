@@ -105,6 +105,11 @@ class Robot:
     path: tuple[Point, ...] = ()
     stability: Stability = field(default_factory=Stability)
     replans: int = 0
+    # Calls where the planner returned no waypoints because the goal was
+    # directly visible. These build no roadmap and must not be counted as
+    # replans: doing so reported ~550 replans in 30 s, one per control tick,
+    # which is a count of clear sightlines rather than of planning work.
+    direct: int = 0
     plan_ms_total: float = 0.0
     laps: int = 0
     closest_mm: float = float("inf")
@@ -225,6 +230,49 @@ def plan_for(planner: str, start: Point, goal: Point,
     return waypoints, (time.perf_counter() - t0) * 1000.0
 
 
+class LogOpponents:
+    """Yellow robots replaying a recorded Division B match, frame by frame.
+
+    Placed rather than driven. These are a recorded obstacle field, not
+    simulated agents: teleporting each frame reproduces the recorded
+    trajectories exactly, where a velocity controller chasing them would track
+    with its own error and stop being the thing that was recorded. It also
+    sidesteps the synthetic-motion problem that defeated two earlier attempts,
+    both of which produced jitter in place rather than travel.
+
+    Frames come from the same reader the offline churn and reuse measurements
+    use, so the closed-loop tier and the log tier see the same motion.
+    """
+
+    def __init__(self, log_path: str, seconds: float, skip_seconds: float,
+                 count: int) -> None:
+        from measure_graph_churn import capture_from_logfile
+
+        self.captures = capture_from_logfile(
+            log_path, seconds=seconds, skip_seconds=skip_seconds
+        )
+        if not self.captures:
+            raise SystemExit(f"no frames read from {log_path}")
+        self.count = count
+        span = self.captures[-1].t_s - self.captures[0].t_s
+        self.hz = len(self.captures) / span if span > 0 else 60.0
+
+    def frame_at(self, elapsed_s: float) -> tuple:
+        """Recorded obstacles at `elapsed_s` in, looping when the clip ends."""
+        i = int(elapsed_s * self.hz) % len(self.captures)
+        return self.captures[i].obstacles
+
+    def place(self, sender: grSimSender, elapsed_s: float) -> None:
+        obstacles = self.frame_at(elapsed_s)[: self.count]
+        if not obstacles:
+            return
+        sender.send_packet(grSimPacketFactory.scenario_replacement_command([
+            {"x": o.pos_mm[0] / 1000.0, "y": o.pos_mm[1] / 1000.0,
+             "orientation": 0.0, "robot_id": i, "isYellow": True}
+            for i, o in enumerate(obstacles)
+        ]))
+
+
 def place_teams(sender: grSimSender, blue: int, yellow: int) -> None:
     """Line the blue team up on one touchline, the yellow team across the middle."""
     robots = []
@@ -311,6 +359,13 @@ def main() -> int:
                         default="geometric")
     parser.add_argument("--period-ms", type=float, default=500.0,
                         help="Replan interval for --trigger periodic")
+    parser.add_argument("--opponents", choices=("patrol", "log"), default="patrol",
+                        help="patrol shuttles yellow robots up and down; log "
+                             "replays recorded Division B match trajectories")
+    parser.add_argument("--log", help="Match log for --opponents log")
+    parser.add_argument("--log-seconds", type=float, default=60.0)
+    parser.add_argument("--log-skip", type=float, default=180.0)
+    parser.add_argument("--out-json", help="Write the per-robot results here")
     parser.add_argument("--no-place", action="store_true",
                         help="Leave the robots where they are")
     parser.add_argument("--selftest", action="store_true")
@@ -318,6 +373,15 @@ def main() -> int:
 
     if args.selftest:
         return selftest()
+
+    opponents = None
+    if args.opponents == "log":
+        if not args.log:
+            parser.error("--opponents log needs --log PATH")
+        opponents = LogOpponents(args.log, args.log_seconds, args.log_skip,
+                                 args.obstacles)
+        print(f"replaying {len(opponents.captures)} frames at "
+              f"{opponents.hz:.0f} Hz from {Path(args.log).name}")
 
     vision = Vision()
     sender = grSimSender()
@@ -349,7 +413,10 @@ def main() -> int:
             tick_start = time.perf_counter()
             vision.update()
             ticks += 1
-            drive_obstacles(dispatcher, vision, args.obstacles)
+            if opponents is None:
+                drive_obstacles(dispatcher, vision, args.obstacles)
+            else:
+                opponents.place(sender, time.time() - started)
 
             for robot in robots:
                 pose = vision.blue.get(robot.robot_id)
@@ -384,7 +451,10 @@ def main() -> int:
                                             obstacles, key=("blue", robot.robot_id))
                     robot.stability.observe(previous, (here, *new_path) if new_path else ())
                     robot.path = new_path
-                    robot.replans += 1
+                    if new_path:
+                        robot.replans += 1
+                    else:
+                        robot.direct += 1
                     robot.plan_ms_total += ms
 
                 # Drive at the next waypoint, or straight at the target when the
@@ -433,12 +503,33 @@ def main() -> int:
         time.sleep(0.3)
         dispatcher.stop()
 
-    print(f"\n{'robot':<8}{'laps':>6}{'replans':>9}{'reversals':>11}"
+    print(f"\n{'robot':<8}{'laps':>6}{'replans':>9}{'direct':>8}{'reversals':>11}"
           f"{'mean ms':>9}{'closest mm':>12}")
-    print("-" * 55)
+    print("-" * 63)
     for r in robots:
-        print(f"#{r.robot_id:<7}{r.laps:>6}{r.replans:>9}{r.stability.reversals:>11}"
-              f"{r.plan_ms_total / max(r.replans, 1):>9.2f}{r.closest_mm:>12.0f}")
+        print(f"#{r.robot_id:<7}{r.laps:>6}{r.replans:>9}{r.direct:>8}"
+              f"{r.stability.reversals:>11}"
+              f"{r.plan_ms_total / max(r.replans + r.direct, 1):>9.2f}"
+              f"{r.closest_mm:>12.0f}")
+    if args.out_json:
+        import json
+        Path(args.out_json).write_text(json.dumps({
+            "meta": {"planner": args.planner, "robots": args.robots,
+                     "obstacles": args.obstacles, "speed_mps": args.speed,
+                     "trigger": args.trigger, "duration_s": args.duration,
+                     "opponents": args.opponents, "log": args.log},
+            "robots": [
+                {"robot_id": r.robot_id, "laps": r.laps, "replans": r.replans, "direct": r.direct,
+                 "reversals": r.stability.reversals,
+                 "replans_compared": r.stability.replans_compared,
+                 "mean_heading_deg": r.stability.mean_heading_deg,
+                 "mean_shift_mm": r.stability.mean_shift_mm,
+                 "mean_plan_ms": r.plan_ms_total / max(r.replans + r.direct, 1),
+                 "closest_mm": r.closest_mm}
+                for r in robots],
+        }, indent=1), encoding="utf-8")
+        print(f"wrote {args.out_json}")
+
     print(f"\nClosest approach below {CONTACT_MM:.0f} mm means the robots touched.")
     print("Reversals are replans that turned the robot more than 90 degrees from")
     print("the direction it was already going; see scripts/path_stability.py.")
