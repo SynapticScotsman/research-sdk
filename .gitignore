@@ -221,3 +221,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Publisher PDFs of cited papers: copyright, and 36 MB. Keep them local.
+docs/papers/
+
