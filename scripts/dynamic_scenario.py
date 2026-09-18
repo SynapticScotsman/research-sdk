@@ -317,6 +317,17 @@ class RunResult:
     accumulated_ms: float
     recalculated: int
     collisions: int
+    # Calls that returned a path, and the time spent only on those. A failed
+    # call empties the path, which re-triggers a call on the next tick, so
+    # `recalculated` counts retries as well as replans and the two planners
+    # that fail most accumulate the most of them.
+    built: int = 0
+    accumulated_ms_built: float = 0.0
+    # Mean over this run's successful plans of the closest that plan came to an
+    # obstacle centre when it was made. A path with room survives an obstacle
+    # moving; one that hugs an obstacle is invalidated by a small step.
+    mean_clearance_mm: float = 0.0
+    min_clearance_mm: float = 0.0
     # Plan-to-plan change, from path_stability.py. Zero means the robot never
     # changed its mind; a high reversal rate is the oscillation the Voronoi
     # roadmap shows under timer-driven replanning.
@@ -360,6 +371,9 @@ def simulate(
     in_contact = [False] * len(loops)
     path: tuple = ()
     arrived = False
+    built = 0
+    accumulated_ms_built = 0.0
+    clearances: list = []
     ticks_since_plan = 0
     history: deque = deque(maxlen=HISTORY_TICKS)
     # Measurement noise is applied to what the TRIGGER sees, never to the true
@@ -391,14 +405,24 @@ def simulate(
         )
 
     def plan_from(p, obs):
-        nonlocal accumulated_ms
+        nonlocal accumulated_ms, built, accumulated_ms_built
         request = PlanRequest(start_mm=p, goal_mm=GOAL_MM, obstacles=obs)
         # One planner per call, not run_all(): that ran all three and tripled
         # both the wall clock and, before it was caught, the accumulated time
         # charged to whichever planner was under test.
         chosen = PLANNER_RUNNERS[planner](request, recalculated)
         accumulated_ms += chosen.planning_time_ms
-        return chosen.waypoints_mm if chosen.success else ()
+        if chosen.success and chosen.waypoints_mm:
+            built += 1
+            accumulated_ms_built += chosen.planning_time_ms
+            # Root the path at the robot, or the clearance of the first leg is
+            # measured from a waypoint the robot has not reached yet.
+            route = (p, *chosen.waypoints_mm)
+            clearances.append(min(
+                (point_to_path_mm(o.pos_mm, route) for o in obs),
+                default=float("inf")))
+            return chosen.waypoints_mm
+        return ()
 
     stability = Stability()
     obs = measured(obstacles_at(t))
@@ -482,6 +506,10 @@ def simulate(
         accumulated_ms=accumulated_ms,
         recalculated=recalculated,
         collisions=collisions,
+        built=built,
+        accumulated_ms_built=accumulated_ms_built,
+        mean_clearance_mm=(sum(clearances) / len(clearances)) if clearances else 0.0,
+        min_clearance_mm=min(clearances) if clearances else 0.0,
         replans_compared=stability.replans_compared,
         reversals=stability.reversals,
         mean_heading_deg=stability.mean_heading_deg,
@@ -526,6 +554,8 @@ def report(results: dict, scenario: str, samples: int, obstacle_speed: float, ro
     print(f"  trigger: their geometric rule, obstacle within {INVALIDATION_MM:.0f} mm of the path\n")
     header = (
         f"{'planner':<26}{'arrived':>9}{'recalc mean':>13}{'sd':>7}{'min':>6}{'max':>6}"
+        f"{'built mean':>12}{'failed %':>10}{'ms/build':>10}"
+        f"{'clearance mm':>14}{'min clr':>9}"
         f"{'accum ms mean':>15}{'nav s mean':>12}{'collisions mean':>17}"
     )
     print("  " + header)
@@ -537,8 +567,17 @@ def report(results: dict, scenario: str, samples: int, obstacle_speed: float, ro
         am = statistics.mean(r.accumulated_ms for r in rs)
         nm = statistics.mean(r.navigation_s for r in rs if r.arrived) if arrived else float("nan")
         cm = statistics.mean(r.collisions for r in rs)
+        bm = statistics.mean(r.built for r in rs)
+        calls = sum(r.recalculated for r in rs)
+        fails = calls - sum(r.built for r in rs)
+        built_total = sum(r.built for r in rs)
+        msb = (sum(r.accumulated_ms_built for r in rs) / built_total
+               if built_total else float("nan"))
         print(
             f"  {name:<26}{f'{arrived}/{len(rs)}':>9}{rm:>13}{rsd:>7}{rmin:>6}{rmax:>6}"
+            f"{bm:>12.2f}{100.0 * fails / max(calls, 1):>9.1f}%{msb:>10.2f}"
+            f"{statistics.mean(r.mean_clearance_mm for r in rs):>14.0f}"
+            f"{min(r.min_clearance_mm for r in rs):>9.0f}"
             f"{am:>15.2f}{nm:>12.2f}{cm:>17.2f}"
         )
     print(

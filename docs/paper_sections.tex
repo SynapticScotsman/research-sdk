@@ -1,4 +1,4 @@
-% Draft sections for "Efficient path planning framework for Dynamic Robot
+﻿% Draft sections for "Efficient path planning framework for Dynamic Robot
 % navigation". Every number here comes from a run in this repository and can be
 % regenerated from saved results; the provenance comment above each table names
 % the script and the saved JSON.
@@ -26,7 +26,7 @@ paired samples per condition.
 
 Two results follow. Committing to the next two path segments, rather than
 invalidating a path whenever any obstacle approaches any part of it, reduces
-replanning by 15 to 35 per cent with no measurable cost in collisions, for
+replanning by 15 to 35 percent with no measurable cost in collisions, for
 every backend, in both scenarios, and at every obstacle speed from 0.5 to
 3.0~m/s. Projecting obstacle velocity 0.25~s ahead halves collisions below
 1.5~m/s but increases them above 2.0~m/s, which is the speed range in which
@@ -35,14 +35,14 @@ crossover.
 
 We further report a negative result relevant to any attempt to apply
 incremental heuristic search in this domain. On a recorded league match, 98.2
-per cent of visibility answers survive a replanning interval, yet only 0.4 per
+percent of visibility answers survive a replanning interval, yet only 0.4 per
 cent can be established as reusable without recomputing them, because the
 graph's vertices are the obstacles themselves. Measured separately, graph
-search accounts for 2.0 per cent of a visibility-graph call and 7.2 per cent of
+search accounts for 2.0 percent of a visibility-graph call and 7.2 percent of
 a Voronoi call. Implementing D* Lite and sharing it across all three backends
 confirms the bound directly: on recorded match play it returns identical paths
 but runs 1.29 to 1.96 times slower than rebuilding with Dijkstra, because the
-roadmaps replace 116 to 193 per cent of their vertex set between consecutive
+roadmaps replace 116 to 193 percent of their vertex set between consecutive
 frames. Incremental repair in this setting must target roadmap construction,
 not search.
 \end{abstract}
@@ -65,7 +65,7 @@ agreement.
 \emph{when} to replan is treated as a policy layer evaluated independently of
 the three backends. Committing to the next two path segments, rather than
 invalidating a path whenever any obstacle approaches any part of it, reduces
-replanning by 15 to 35 per cent with no measurable cost in collisions, for
+replanning by 15 to 35 percent with no measurable cost in collisions, for
 every backend, in both scenarios, and at every obstacle speed tested.
 
 \item \textbf{A bounded result for motion prediction.} Projecting obstacle
@@ -80,18 +80,18 @@ domain, obtained by implementing it.} We implement D* Lite and share it across
 all three backends. It returns paths identical to a full rebuild on all 2418
 paired queries, to within $0.0000$~mm, and runs 1.29 to 1.96 times slower on
 recorded match play. The mechanism is roadmap churn: obstacle-vertex and
-tessellation roadmaps replace 116 to 193 per cent of their vertex set between
+tessellation roadmaps replace 116 to 193 percent of their vertex set between
 consecutive camera frames, so no previous search tree survives to repair. A
-frozen-obstacle control returns 4 to 10 per cent churn and an 18 per cent
+frozen-obstacle control returns 4 to 10 percent churn and an 18 percent
 speedup, which establishes that the domain rather than the implementation
-denies the saving. Since graph search is only 2.0 and 7.2 per cent of a
+denies the saving. Since graph search is only 2.0 and 7.2 percent of a
 planning call in any case, incremental repair in this setting must target
 roadmap construction.
 
 \item \textbf{A conditional recommendation.} The Voronoi roadmap dominates both
 alternatives under every event-driven trigger tested, replanning under a
 quarter as often as the visibility graph (3.09 against 13.37 recalculations per
-run) for 39 per cent of the collisions and a fifth of the planning time, and it
+run) for 39 percent of the collisions and a fifth of the planning time, and it
 is the only backend that fails under timer-driven
 replanning, reaching the goal in 17 of 200 runs at a 50~ms period. The best
 mapping is therefore usable only in combination with an event-driven policy,
@@ -296,11 +296,19 @@ of the remaining path. Every rule sees the same 200 obstacle-phase draws, so
 differences between rows are attributable to the rule rather than to the
 sample.
 
+The control interval is $\Delta t=0.05$~s; it is not the prediction horizon.
+The trigger sweep evaluates $H\in\{0.25,0.50,1.00\}$~s. At each decision,
+obstacle velocity is estimated by finite differences over one control interval
+and its position is projected to $H/4$, $H/2$, $3H/4$, and $H$.
+The smoothed variant estimates velocity over five intervals ($0.25$~s) and
+uses $H=0.25$~s. The saved speed sweeps compare the $0.25$~s predictive
+variants; they do not evaluate a $0.05$~s prediction horizon.
+
 \subsubsection{Committing to the near field}
 
 % provenance: trigger_sweep_n200_scenario_1.json, near_field_2seg
 Table~\ref{tab:nearfield} reports the paired difference against the geometric
-trigger, with 95 per cent bootstrap confidence intervals over the paired
+trigger, with 95 percent bootstrap confidence intervals over the paired
 differences.
 
 \begin{table}[t]
@@ -348,7 +356,7 @@ on a recorded match. Collisions are always evaluated on true positions.
 \small
 \begin{tabular}{lrrr}
 \hline
-Obstacle speed (m/s) & Geometric & Predictive & Near-field \\
+Obstacle speed (m/s) & Geometric & Predictive, $H=0.25$~s & Near-field, $K=2$ \\
 \hline
 0.5 & 0.49 & \textbf{0.14} & 0.48 \\
 1.0 & 0.79 & \textbf{0.33} & 0.76 \\
@@ -359,7 +367,10 @@ Obstacle speed (m/s) & Geometric & Predictive & Near-field \\
 \hline
 \end{tabular}
 \caption{Collision episodes per run against obstacle speed, probabilistic
-roadmap, $n=100$ paired samples per cell, 23~mm measurement noise.}
+roadmap, $n=100$ paired samples per cell, 23~mm measurement noise. The speed
+sweep holds the prediction horizon at $H=0.25$~s, for both the plain and the
+smoothed variant; the comparison across $H\in\{0.25,0.50,1.00\}$~s is the
+trigger sweep. A $0.05$~s horizon was not evaluated.}
 \label{tab:predictive}
 \end{table}
 
@@ -391,7 +402,7 @@ the direction the previous plan pointed and the direction its replacement
 points, both measured from where the robot stands, together with the mean
 distance between the two routes over their whole length. Under a 50~ms timer the
 Voronoi route moves 31~mm on average, less than a robot radius, while the
-commanded direction reverses on 57.1 per cent of replans. The robot is not
+commanded direction reverses on 57.1 percent of replans. The robot is not
 choosing between different routes. It is being told to go left and then right
 around essentially the same corridor, twenty times a second, and makes no
 progress.
@@ -417,9 +428,11 @@ reproduces the same ordering and is reported in the text. Turn is the
 mean angle between consecutive plans measured from the robot's position;
 reversals are replans turning more than $90^\circ$, which command the robot back
 the way it came; shift is the mean distance between consecutive routes over
-their whole length. Reversals per run, not the reversal rate and not the replan
-count, is what tracks arrival: every trigger at or below 5.0 arrives in all 200
-runs and every trigger at or above 14.7 fails.}
+their whole length. Within these conditions, which hold the obstacle speed at
+1.0~m/s, reversals per run orders arrival where neither the reversal rate nor
+the replan count does: every trigger at or below 5.0 arrives in all 200 runs
+and every trigger at or above 14.7 fails. That ordering does not hold once the
+obstacle speed varies; see the text.}
 \label{tab:stability}
 \end{table}
 
@@ -436,11 +449,24 @@ Scenario 2, with five obstacles rather than seven, reproduces all of it. Its
 Voronoi rows arrive in all 200 runs under every event-driven trigger and fail
 under every timer, and the same predictive-against-periodic pair is starker
 there: a 1.00~s prediction replans 42.5 times per run and arrives in every one
-of 200, while a 500~ms timer replans 30.2 times and fails in 32. Pooling the 22
-Voronoi conditions across both scenarios, every condition that arrives in all
-200 runs sits at or below 5.9 reversals per run and every condition that fails
-sits at or above 14.7. Nothing lands between the two, so the separation is not
-an artefact of where we drew a line.
+of 200, while a 500~ms timer replans 30.2 times and fails in 32.
+
+% provenance: results/stability-speed/, scripts/report_stability.py
+Reversals per run separates arrival cleanly within these conditions, which all
+hold the obstacle speed at 1.0~m/s: every condition arriving in all 200 runs
+sits at or below 5.9, and every condition that fails sits at or above 14.7.
+That separation does not survive a change of speed. Repeating the measurement
+at 0.5 to 3.0~m/s in both scenarios, 396 conditions in total, the two groups
+overlap: the probabilistic roadmap under a 50~ms timer reverses 12.0 times per
+run and arrives in all 200, while the Voronoi roadmap under a 200~ms timer
+fails at 11.1. We therefore report reversals per run as a description of what
+the failing runs do, not as a predictor of failure.
+
+What does separate over the full set is the combination of roadmap and trigger
+family. All 48 conditions pairing the Voronoi roadmap with a timer fail at
+every speed in both scenarios, and all 348 remaining conditions arrive in all
+200 runs. Reversals are high in exactly the cases that fail, which is why the
+count appeared to predict them, but the count alone does not.
 
 The shift column rules out the explanation we had been giving. If the failure
 were route switching, the failing runs would show the largest changes of route.
@@ -450,7 +476,7 @@ and arrives every time; the 50~ms timer moves it 31~mm and arrives 17 times in
 side of an almost unchanged corridor to be on, and it changes it twenty times a
 second.
 
-The visibility graph is the stable backend, reversing on 0.0 to 1.4 per cent of
+The visibility graph is the stable backend, reversing on 0.0 to 1.4 percent of
 replans under every trigger in both scenarios. Its instability and the Voronoi roadmap's
 come from the same property that gives each its character. A shortest path
 through a visibility graph is essentially unique, so replanning from a slightly
@@ -470,18 +496,18 @@ rebuilding it. We report two measurements that bound what such reuse can
 achieve here, because both are negative and both are useful.
 
 First, reuse is largely unprovable on obstacle-vertex roadmaps. On a recorded
-league match, comparing two planning queries 500~ms apart, 98.2 per cent of
-visibility answers were unchanged, but only 0.4 per cent could be established as
+league match, comparing two planning queries 500~ms apart, 98.2 percent of
+visibility answers were unchanged, but only 0.4 percent could be established as
 reusable by a sound test. The cause is structural: a visibility graph's
 vertices are the inflated obstacle corners, so an obstacle that moves at all
 displaces every vertex it owns and every edge incident to them. A Voronoi
 roadmap built on a fixed backbone of virtual sites is markedly better behaved,
-retaining 70.9 per cent of its edges when all obstacles move 500~mm, because
+retaining 70.9 percent of its edges when all obstacles move 500~mm, because
 obstacle motion perturbs the diagram locally.
 
 Second, graph search is not where the cost lies. Measured separately on an
-eight-obstacle scene, roadmap construction accounts for 98.0 per cent of a
-visibility-graph call (29.94~ms of 30.54~ms) and 92.8 per cent of a Voronoi call
+eight-obstacle scene, roadmap construction accounts for 98.0 percent of a
+visibility-graph call (29.94~ms of 30.54~ms) and 92.8 percent of a Voronoi call
 (7.67~ms of 8.26~ms). Incremental heuristic search of the D* and LPA* family
 reuses the search tree, so its available saving is bounded by 2.0 and 7.2 per
 cent respectively, irrespective of implementation quality.
@@ -508,22 +534,22 @@ Voronoi    & 41.3 & 116.0 & 0.754 & \textbf{0.446} \\
 \end{tabular}
 \caption{Search cost per query on 421 frames of recorded match play, five
 alternating repeats, medians. Churn is the percentage of the roadmap's vertex
-set added or removed between consecutive frames; above 100 per cent the previous
+set added or removed between consecutive frames; above 100 percent the previous
 search tree describes a graph that no longer exists. Both backends returned
 paths of identical length on every frame.}
 \label{tab:dstar}
 \end{table}
 
 D* Lite is between 1.29 and 1.96 times slower than rebuilding with Dijkstra. The
-mechanism is in the churn column. A visibility graph replaces 192.5 per cent of
-its vertex set per frame and a Voronoi roadmap 116.0 per cent, so the repair
+mechanism is in the churn column. A visibility graph replaces 192.5 percent of
+its vertex set per frame and a Voronoi roadmap 116.0 percent, so the repair
 must diff a graph that has been almost entirely replaced. Only the probabilistic
-roadmap retains its vertices (14.7 per cent churn), because its milestones are
+roadmap retains its vertices (14.7 percent churn), because its milestones are
 drawn from a fixed seed and therefore do not move with the obstacles at all; at
 18.5 vertices, however, the incremental bookkeeping exceeds the search it
 replaces. A control in which obstacles are held stationary and only the robot
-moves gives 4 to 10 per cent churn, one vertex expanded per repair, and D* Lite
-18 per cent faster on the visibility graph, which confirms that the
+moves gives 4 to 10 percent churn, one vertex expanded per repair, and D* Lite
+18 percent faster on the visibility graph, which confirms that the
 implementation reuses correctly and that the domain, not the implementation, is
 what denies the saving.
 
@@ -579,7 +605,7 @@ drive through the tightest of them.
 That leaves the property the whole argument rests on: whether a fixed backbone
 holds the roadmap still while obstacles move. Table~\ref{tab:lattice} says it
 does not. Replacing density placement with a 900~mm lattice halves the churn
-ratio, 116 to 54 per cent, which is what the argument predicts and would be
+ratio, 116 to 54 percent, which is what the argument predicts and would be
 encouraging if the ratio were the quantity of interest. It is not. Churn is
 $(\mathrm{added} + \mathrm{removed}) / \mathrm{total}$, and the count of
 vertices that actually change per frame moves the other way, from 47.9 to 64.2.
