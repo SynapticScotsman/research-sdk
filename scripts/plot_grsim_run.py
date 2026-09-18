@@ -29,6 +29,8 @@ SCALE = 0.062                 # px per mm: a 9000 mm field lands at 558 px
 
 PLATE, GRID, DIM = "#05070A", "#1C242C", "#8A97A0"
 OBSTACLE, ROBOT, START, GOAL = "#C33A50", "#7CE0C0", "#FFFFFF", "#FFB000"
+PLAN = "#5B8DEF"   # every path the planner produced, drawn faintly
+PLANDOT = "#9DBBF5"  # where the robot was standing when it replanned
 
 
 def _sx(x: float) -> float:
@@ -47,7 +49,8 @@ def render(run: dict) -> str:
     w = FIELD_X * SCALE + 2 * MARGIN
     h = FIELD_Y * SCALE + 2 * MARGIN + 30
 
-    out = [f'<svg viewBox="0 0 {w:.0f} {h:.0f}" role="img" aria-label="'
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w:.0f} {h:.0f}" '
+           f'width="{w:.0f}" height="{h:.0f}" role="img" aria-label="'
            f'One controlled robot crossing the field while six recorded robots replay '
            f'from a match. The robot completed {robot["laps"]} crossings with '
            f'{robot["replans"]} replans.">',
@@ -71,6 +74,23 @@ def render(run: dict) -> str:
         out.append(f'<circle cx="{_sx(pts[-1][0]):.1f}" cy="{_sy(pts[-1][1]):.1f}" '
                    f'r="{90*SCALE:.1f}" fill="{OBSTACLE}" opacity="0.85"/>')
 
+    # Every plan the planner returned, faint, oldest to newest. This is the
+    # part the figure exists to show: the executed track alone cannot
+    # distinguish a robot that planned once from one that replanned ten times.
+    events = [e for e in (robot.get("diagnostics", {}).get("plan_events") or [])
+              if e.get("status") == "path" and (e.get("reference_path_mm") or [])]
+    for e in events:
+        pts = e["reference_path_mm"]
+        if len(pts) < 2:
+            continue
+        d = " ".join(f"{_sx(x):.1f},{_sy(y):.1f}" for x, y in pts)
+        out.append(f'<polyline points="{d}" fill="none" stroke="{PLAN}" '
+                   f'stroke-width="1" opacity="0.42" stroke-linejoin="round"/>')
+    for e in events:
+        first = e["reference_path_mm"][0]
+        out.append(f'<circle cx="{_sx(first[0]):.1f}" cy="{_sy(first[1]):.1f}" '
+                   f'r="1.9" fill="{PLANDOT}" opacity="0.9"/>')
+
     track = robot.get("track") or []
     if len(track) >= 2:
         d = " ".join(f"{_sx(x):.1f},{_sy(y):.1f}" for x, y in track)
@@ -79,16 +99,20 @@ def render(run: dict) -> str:
         out.append(f'<circle cx="{_sx(track[0][0]):.1f}" cy="{_sy(track[0][1]):.1f}" '
                    f'r="3" fill="{START}"/>')
 
-    for x, label in ((-3200.0, "start"), (3200.0, "goal")):
-        out.append(f'<circle cx="{_sx(x):.1f}" cy="{_sy(0):.1f}" r="3.4" fill="none" '
+    lane = float(meta.get("lane_centre_mm", 0.0))
+    tx = abs(float(meta.get("traverse_x_mm", 3200.0)))
+    for x, label in ((-tx, "start"), (tx, "goal")):
+        out.append(f'<circle cx="{_sx(x):.1f}" cy="{_sy(lane):.1f}" r="3.4" fill="none" '
                    f'stroke="{GOAL}" stroke-width="1.4"/>')
-        out.append(f'<text x="{_sx(x):.1f}" y="{_sy(0) - 9:.1f}" fill="{GOAL}" '
+        out.append(f'<text x="{_sx(x):.1f}" y="{_sy(lane) - 9:.1f}" fill="{GOAL}" '
                    f'font-family="ui-monospace, Menlo, monospace" font-size="9" '
                    f'text-anchor="middle">{label}</text>')
 
     g = prov.get("grsim", {})
+    built = [e["planning_ms"] for e in events]
+    ms = sum(built) / len(built) if built else robot["mean_plan_ms"]
     line1 = (f'{meta["planner"]} planner  ·  {robot["laps"]} crossings  ·  '
-             f'{robot["replans"]} replans  ·  {robot["mean_plan_ms"]:.2f} ms mean  ·  '
+             f'{len(events)} plans drawn  ·  {ms:.2f} ms per roadmap build  ·  '
              f'closest {robot["closest_mm"]:.0f} mm by vision')
     line2 = (f'clip {meta.get("log_skip_s", 0):.0f}-'
              f'{meta.get("log_skip_s", 0) + meta.get("log_seconds", 0):.0f} s  ·  '
@@ -100,7 +124,7 @@ def render(run: dict) -> str:
                f'font-family="ui-monospace, Menlo, monospace" font-size="9.5">{line2}</text>')
     out.append(f'<text x="{w-MARGIN:.0f}" y="{MARGIN-10:.0f}" fill="{DIM}" '
                f'font-family="ui-monospace, Menlo, monospace" font-size="9" '
-               f'text-anchor="end">green: controlled robot · red: replayed match robots</text>')
+               f'text-anchor="end">blue: planned paths · green: robot actually driven · red: replayed match robots</text>')
     out.append("</svg>")
     return "\n".join(out)
 
