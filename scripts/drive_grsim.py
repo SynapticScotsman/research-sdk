@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Drive grSim from the planners, headless, so you can watch them work.
 
 Places a blue team on one touchline and sends it across the pitch and back,
@@ -563,14 +563,31 @@ def run_provenance() -> dict:
     # sessions are not comparable: across one restart, with the same command
     # line and the same 6 in-play obstacles, every planner got 1.5 to 1.6 times
     # faster and the per-planner ranges did not overlap. Pool by this value.
+    import platform
+
+    on_windows = platform.system() == "Windows"
+
+    def where_grsim_lives(cmd: str) -> str:
+        """Run a shell command on the machine grSim runs on.
+
+        There is no Windows build of grSim in this project, so a driver running
+        on Windows is talking to grSim inside WSL over unicast (--grsim-host).
+        The pid, start time and config it needs for provenance live there, not
+        here; without this hop a Windows-driven run recorded None for the noise
+        and delay settings that decide whether the result is comparable.
+        """
+        argv = (["wsl.exe", "-e", "bash", "-lc", cmd] if on_windows
+                else ["bash", "-lc", cmd])
+        return subprocess.run(argv, capture_output=True, text=True,
+                              timeout=15).stdout.strip()
+
+    out["grsim_location"] = "wsl" if on_windows else "local"
     try:
-        pid = subprocess.run(["pgrep", "-o", "grSim"], capture_output=True,
-                             text=True, timeout=10).stdout.strip()
+        pid = where_grsim_lives("pgrep -o grSim")
         out["grsim_pid"] = int(pid) if pid else None
         # Process start time, so a reused pid after a restart is still distinct.
-        out["grsim_started"] = subprocess.run(
-            ["ps", "-o", "lstart=", "-p", pid], capture_output=True,
-            text=True, timeout=10).stdout.strip() or None if pid else None
+        out["grsim_started"] = (
+            where_grsim_lives(f"ps -o lstart= -p {pid}") or None) if pid else None
     except Exception:  # noqa: BLE001 - provenance must never fail a run
         out["grsim_pid"] = None
         out["grsim_started"] = None
@@ -618,12 +635,24 @@ def run_provenance() -> dict:
 
     cfg = Path.home() / ".grsim.xml"
     grsim: dict = {"config": str(cfg)}
+    xml = ""
     if cfg.exists():
         xml = cfg.read_text(encoding="utf-8", errors="replace")
+    elif on_windows:
+        try:
+            xml = where_grsim_lives("cat ~/.grsim.xml")
+            grsim["config"] = "~/.grsim.xml (WSL)"
+        except Exception:  # noqa: BLE001
+            xml = ""
+    if xml:
+        # vision_address says whether vision went by multicast (224.5.23.2,
+        # drivers inside WSL) or unicast to the Windows side of the WSL adapter
+        # (drivers on Windows). The two are not both possible at once.
         for key, label in (("Noise", "noise_enabled"),
                            ("Deviation for x values", "noise_x_mm"),
                            ("Deviation for y values", "noise_y_mm"),
-                           ("Sending delay (milliseconds)", "sending_delay_ms")):
+                           ("Sending delay (milliseconds)", "sending_delay_ms"),
+                           ("Vision multicast address", "vision_address")):
             m = re.search(r'<Var name="%s"[^>]*>\s*([^<\s]+)' % re.escape(key), xml)
             grsim[label] = m.group(1) if m else None
     out["grsim"] = grsim
@@ -699,6 +728,10 @@ def main() -> int:
                              "planner call builds a roadmap, matching the offline "
                              "tables. Without it the planners take the shortcut at "
                              "different rates and per-call times compare unlike work.")
+    parser.add_argument("--grsim-host", default=None,
+                        help="IP that receives robot commands (default: grsim_command_ip "
+                             "in network_input.yaml). Set to the WSL address when grSim runs "
+                             "in WSL and this driver runs on Windows.")
     parser.add_argument("--allow-extra-robots", action="store_true",
                         help="Run even when grSim shows more robots than were asked "
                              "for. Off by default: every robot on the pitch counts as "
@@ -785,7 +818,11 @@ def main() -> int:
             for i, (y, r) in enumerate(opponents.keys)))
 
     vision = Vision(pixel_truth=args.grsim_pixel_truth)
-    sender = grSimSender()
+    # --grsim-host lets the driver run on Windows while grSim runs in WSL: commands
+    # go by unicast to the WSL address and grSim is configured to send vision by
+    # unicast back to the Windows address. WSL2 NAT blocks the multicast vision
+    # stream, which is why everything grSim-related used to run inside WSL.
+    sender = grSimSender(ip=args.grsim_host) if args.grsim_host else grSimSender()
     dispatcher = RobotCommandDispatcher(sender.send_robot_command, send_hz=COMMAND_HZ)
     dispatcher.start()
 
@@ -970,6 +1007,7 @@ def main() -> int:
                      "opponents": args.opponents, "log": args.log,
                      "replay_team": args.replay_team,
                      "force_full_build": args.force_full_build,
+                     "grsim_host": args.grsim_host,
                      "lane_centre_mm": args.lane_centre_mm,
                      "traverse_x_mm": args.traverse_x,
                      "observed_blue": seen_blue,
