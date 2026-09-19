@@ -328,6 +328,17 @@ class RunResult:
     # moving; one that hugs an obstacle is invalidated by a small step.
     mean_clearance_mm: float = 0.0
     min_clearance_mm: float = 0.0
+    # The same minimum split by cause. A replan fires with an obstacle inside
+    # the trigger band of the REMAINING path, which starts at the robot, so a
+    # plan made with an obstacle beside the robot has low rooted clearance
+    # whatever the roadmap did; in this kinematic harness the robot can even
+    # be overlapping an obstacle when it replans (contact is counted, not
+    # prevented). `start` is the distance from the robot to the nearest
+    # obstacle centre at plan time; `route` is the clearance of the plan
+    # beyond its first leg, the part the roadmap chose. inf when no plan in
+    # the run had a second leg.
+    min_start_clearance_mm: float = 0.0
+    min_route_clearance_mm: float = float("inf")
     # Plan-to-plan change, from path_stability.py. Zero means the robot never
     # changed its mind; a high reversal rate is the oscillation the Voronoi
     # roadmap shows under timer-driven replanning.
@@ -374,6 +385,8 @@ def simulate(
     built = 0
     accumulated_ms_built = 0.0
     clearances: list = []
+    start_clearances: list = []
+    route_clearances: list = []
     ticks_since_plan = 0
     history: deque = deque(maxlen=HISTORY_TICKS)
     # Measurement noise is applied to what the TRIGGER sees, never to the true
@@ -421,6 +434,13 @@ def simulate(
             clearances.append(min(
                 (point_to_path_mm(o.pos_mm, route) for o in obs),
                 default=float("inf")))
+            start_clearances.append(min(
+                (math.dist(p, o.pos_mm) for o in obs), default=float("inf")))
+            beyond = _rooted_at(p, chosen.waypoints_mm)[1:]
+            if len(beyond) >= 2:
+                route_clearances.append(min(
+                    (point_to_path_mm(o.pos_mm, beyond) for o in obs),
+                    default=float("inf")))
             return chosen.waypoints_mm
         return ()
 
@@ -510,6 +530,8 @@ def simulate(
         accumulated_ms_built=accumulated_ms_built,
         mean_clearance_mm=(sum(clearances) / len(clearances)) if clearances else 0.0,
         min_clearance_mm=min(clearances) if clearances else 0.0,
+        min_start_clearance_mm=min(start_clearances) if start_clearances else 0.0,
+        min_route_clearance_mm=min(route_clearances) if route_clearances else float("inf"),
         replans_compared=stability.replans_compared,
         reversals=stability.reversals,
         mean_heading_deg=stability.mean_heading_deg,
@@ -555,7 +577,7 @@ def report(results: dict, scenario: str, samples: int, obstacle_speed: float, ro
     header = (
         f"{'planner':<26}{'arrived':>9}{'recalc mean':>13}{'sd':>7}{'min':>6}{'max':>6}"
         f"{'built mean':>12}{'failed %':>10}{'ms/build':>10}"
-        f"{'clearance mm':>14}{'min clr':>9}"
+        f"{'clearance mm':>14}{'min clr':>9}{'min start':>11}{'min route':>11}{'route<210':>11}"
         f"{'accum ms mean':>15}{'nav s mean':>12}{'collisions mean':>17}"
     )
     print("  " + header)
@@ -573,13 +595,32 @@ def report(results: dict, scenario: str, samples: int, obstacle_speed: float, ro
         built_total = sum(r.built for r in rs)
         msb = (sum(r.accumulated_ms_built for r in rs) / built_total
                if built_total else float("nan"))
+        # Route clearance exists only for plans with a second leg; a run whose
+        # plans were all single legs contributes nothing here rather than a 0.
+        routed = [r.min_route_clearance_mm for r in rs if math.isfinite(r.min_route_clearance_mm)]
+        min_route = min(routed) if routed else float("nan")
+        # 210 mm = 90 mm robot + 90 mm obstacle + 30 mm clearance, the inflation
+        # every backend plans with. A route inside it passed through the
+        # inflated disc of an obstacle as that obstacle stood at plan time.
+        tight = 100.0 * sum(v < 210.0 for v in routed) / len(routed) if routed else float("nan")
         print(
             f"  {name:<26}{f'{arrived}/{len(rs)}':>9}{rm:>13}{rsd:>7}{rmin:>6}{rmax:>6}"
             f"{bm:>12.2f}{100.0 * fails / max(calls, 1):>9.1f}%{msb:>10.2f}"
             f"{statistics.mean(r.mean_clearance_mm for r in rs):>14.0f}"
             f"{min(r.min_clearance_mm for r in rs):>9.0f}"
+            f"{min(r.min_start_clearance_mm for r in rs):>11.0f}"
+            f"{min_route:>11.0f}{tight:>10.1f}%"
             f"{am:>15.2f}{nm:>12.2f}{cm:>17.2f}"
         )
+    print(
+        "\n  clearance mm = mean over successful plans of the nearest obstacle centre to the plan, rooted"
+        "\n  at the robot, at plan time; min clr = its minimum over the run. min start = nearest obstacle"
+        "\n  to the ROBOT when a plan was made (a replan fires with an obstacle in the trigger band of the"
+        "\n  remaining path, which begins at the robot). min route = the plan beyond its first leg, the"
+        "\n  roadmap portion; route<210 = share of runs whose tightest route crossed the 210 mm inflation"
+        "\n  disc of an obstacle. If min clr tracks min start and not min route, the tight spot is where"
+        "\n  the robot already was, not where the planner sent it."
+    )
     print(
         "\n  Their Table 9, scenario 1, paths recalculated: DVG+A* mean 13.09 (sd 5.05, min 5, max 48),"
         "\n  RRT mean 34.08 (sd 9.60, min 10, max 61). Scenario 2: DVG+A* 5.79, RRT 6.93."
@@ -738,6 +779,12 @@ def _run_one(job: tuple) -> tuple[int, str, int, dict]:
         "replans_compared": r.replans_compared, "reversals": r.reversals,
         "mean_heading_deg": r.mean_heading_deg, "mean_shift_mm": r.mean_shift_mm,
         "p95_shift_mm": r.p95_shift_mm,
+        # Without these the sweep JSONs carried no clearance at all: the
+        # fields defaulted to 0 on load and read as a measured zero.
+        "built": r.built, "accumulated_ms_built": r.accumulated_ms_built,
+        "mean_clearance_mm": r.mean_clearance_mm, "min_clearance_mm": r.min_clearance_mm,
+        "min_start_clearance_mm": r.min_start_clearance_mm,
+        "min_route_clearance_mm": r.min_route_clearance_mm,
     }
 
 
@@ -838,10 +885,10 @@ def report_speeds(results: dict, scenario: str, samples: int, robot_speed: float
     for name in PLANNER_NAMES:
         print(f"\n  -- {name} --")
         header = f"{'obst m/s':>10}" + "".join(
-            f"{t.removeprefix('trigger_'):>26}" for t in trig_names
+            f"{t.removeprefix('trigger_'):>36}" for t in trig_names
         )
         print("  " + header)
-        print("  " + " " * 10 + "".join(f"{'recalc  collide  arrive':>26}" for _ in trig_names))
+        print("  " + " " * 10 + "".join(f"{'recalc  collide  arrive  route mm':>36}" for _ in trig_names))
         print("  " + "-" * len(header))
         for v in speeds:
             row = f"{v:>10.1f}"
@@ -850,12 +897,16 @@ def report_speeds(results: dict, scenario: str, samples: int, robot_speed: float
                 rec = statistics.mean(r.recalculated for r in rs)
                 col = statistics.mean(r.collisions for r in rs)
                 arr = sum(r.arrived for r in rs)
-                row += f"{rec:>10.2f}{col:>8.2f}{f'{arr}/{len(rs)}':>8}"
+                routed = [r.min_route_clearance_mm for r in rs if math.isfinite(r.min_route_clearance_mm)]
+                route = statistics.mean(routed) if routed else float("nan")
+                row += f"{rec:>10.2f}{col:>8.2f}{f'{arr}/{len(rs)}':>8}{route:>10.0f}"
             print("  " + row)
     print(
         "\n  recalc = paths recalculated, mean per run; collide = collision episodes, mean per run;"
-        "\n  arrive = runs reaching the goal inside the 30 s limit. Their Table 9 is one point on"
-        "\n  the geometric column at an unstated speed."
+        "\n  arrive = runs reaching the goal inside the 30 s limit; route mm = mean over runs of the"
+        "\n  tightest clearance of the plan beyond its first leg (the roadmap portion), obstacle centre to"
+        "\n  path at plan time, against a 210 mm inflation disc. Their Table 9 is one point on the"
+        "\n  geometric column at an unstated speed."
     )
 
 
