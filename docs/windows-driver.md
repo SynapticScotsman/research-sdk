@@ -79,6 +79,13 @@ with when plans happen; distance travelled is the decisive row.
 The result file records `provenance.grsim_location: "windows"`, the local pid
 and start time, and the config path actually read.
 
+`grsim-windows.ps1` returns only once a vision frame has arrived on the
+multicast group, which took 1.2 s from a cold headless start, so a script can
+launch and drive back to back. It launches without redirecting grSim's output
+on purpose: with `-RedirectStandardOutput`, grSim inherits the shell's stdout
+pipe and anything that pipes the launcher's output blocks until grSim exits.
+That cost one five-minute hang before it was understood.
+
 ## 2. grSim in WSL, driver on Windows over unicast
 
 grSim stays in WSL. The driver, `scripts/drive_grsim.py`, runs under Windows

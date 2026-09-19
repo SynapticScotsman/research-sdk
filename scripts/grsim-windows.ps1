@@ -1,4 +1,4 @@
-# Start the native Windows build of grSim.
+﻿# Start the native Windows build of grSim.
 #
 #   .\scripts\grsim-windows.ps1 -Headless    # for experiments (see below)
 #   .\scripts\grsim-windows.ps1              # with a window, to watch
@@ -59,9 +59,29 @@ $env:PATH = "C:\msys64\mingw64\bin;" + $env:PATH
 $env:RESEARCH_GRSIM_CONFIG = Join-Path $Root "grsim-windows.xml"
 $args = @()
 if ($Headless) { $args += "--headless" }
-$p = Start-Process -FilePath $exe -ArgumentList $args -WorkingDirectory (Split-Path $exe) -PassThru `
-    -RedirectStandardOutput (Join-Path $Root "grsim-stdout.log") -RedirectStandardError (Join-Path $Root "grsim-stderr.log")
-Start-Sleep -Seconds 5
-if ($p.HasExited) { throw "grSim exited with code $($p.ExitCode); see $Root\grsim-stderr.log" }
-Write-Host "grSim pid $($p.Id), config $env:RESEARCH_GRSIM_CONFIG"
+# No -RedirectStandardOutput/-RedirectStandardError here. Those make .NET start
+# grSim with inheritable handles to this shell's stdout pipe, so any caller that
+# pipes this script's output (`... | Select-Object`) blocks until grSim EXITS,
+# not until this script returns. Measured 19/09/2026: a wrapper hung for over
+# five minutes with the launcher long gone, and released the instant grSim
+# was stopped. grSim prints almost nothing; if it dies at start, HasExited
+# below reports it.
+$p = Start-Process -FilePath $exe -ArgumentList $args -WorkingDirectory (Split-Path $exe) -PassThru
+# Return only when vision is actually flowing, so that "the launcher returned"
+# means "a driver can connect now" rather than "a process exists".
+$udp = New-Object System.Net.Sockets.UdpClient
+$udp.ExclusiveAddressUse = $false
+$udp.Client.SetSocketOption([Net.Sockets.SocketOptionLevel]::Socket, [Net.Sockets.SocketOptionName]::ReuseAddress, $true)
+$udp.Client.Bind((New-Object System.Net.IPEndPoint ([System.Net.IPAddress]::Any, 10020)))
+$udp.JoinMulticastGroup([System.Net.IPAddress]::Parse("224.5.23.2"))
+$udp.Client.ReceiveTimeout = 2000
+$sw = [Diagnostics.Stopwatch]::StartNew()
+$ready = $false
+while ($sw.Elapsed.TotalSeconds -lt 60) {
+    if ($p.HasExited) { $udp.Close(); throw "grSim exited with code $($p.ExitCode) before publishing vision; run it by hand from a MINGW64 shell to see its output" }
+    try { $ep = $null; [void]$udp.Receive([ref]$ep); $ready = $true; break } catch { }
+}
+$udp.Close()
+if (-not $ready) { throw "grSim is running (pid $($p.Id)) but published no vision on 224.5.23.2:10020 within 60 s" }
+Write-Host ("grSim pid {0}, first vision frame after {1:N1} s, config {2}" -f $p.Id, $sw.Elapsed.TotalSeconds, $env:RESEARCH_GRSIM_CONFIG)
 Write-Host "commands 127.0.0.1:20010, vision 224.5.23.2:10020 (multicast, works on the local host)"
