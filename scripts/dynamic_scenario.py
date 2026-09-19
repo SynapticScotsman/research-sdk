@@ -600,9 +600,13 @@ def report(results: dict, scenario: str, samples: int, obstacle_speed: float, ro
         routed = [r.min_route_clearance_mm for r in rs if math.isfinite(r.min_route_clearance_mm)]
         min_route = min(routed) if routed else float("nan")
         # 210 mm = 90 mm robot + 90 mm obstacle + 30 mm clearance, the inflation
-        # every backend plans with. A route inside it passed through the
-        # inflated disc of an obstacle as that obstacle stood at plan time.
-        tight = 100.0 * sum(v < 210.0 for v in routed) / len(routed) if routed else float("nan")
+        # PRM and the visibility graph plan with. A route inside it passed
+        # through the inflated disc of an obstacle as that obstacle stood at
+        # plan time. The 1 mm tolerance is for the visibility graph, whose
+        # routes run along the inflated polygon's edges at 210 mm exactly and
+        # land a float below it in 42 to 88 percent of runs (n = 200, both
+        # scenarios); without it that column read as corner cutting.
+        tight = 100.0 * sum(v < 209.0 for v in routed) / len(routed) if routed else float("nan")
         print(
             f"  {name:<26}{f'{arrived}/{len(rs)}':>9}{rm:>13}{rsd:>7}{rmin:>6}{rmax:>6}"
             f"{bm:>12.2f}{100.0 * fails / max(calls, 1):>9.1f}%{msb:>10.2f}"
@@ -617,9 +621,9 @@ def report(results: dict, scenario: str, samples: int, obstacle_speed: float, ro
         "\n  at the robot, at plan time; min clr = its minimum over the run. min start = nearest obstacle"
         "\n  to the ROBOT when a plan was made (a replan fires with an obstacle in the trigger band of the"
         "\n  remaining path, which begins at the robot). min route = the plan beyond its first leg, the"
-        "\n  roadmap portion; route<210 = share of runs whose tightest route crossed the 210 mm inflation"
-        "\n  disc of an obstacle. If min clr tracks min start and not min route, the tight spot is where"
-        "\n  the robot already was, not where the planner sent it."
+        "\n  roadmap portion; route<210 = share of runs whose tightest route came inside the 210 mm"
+        "\n  inflation disc of an obstacle by more than 1 mm. If min clr tracks min start and not min"
+        "\n  route, the tight spot is where the robot already was, not where the planner sent it."
     )
     print(
         "\n  Their Table 9, scenario 1, paths recalculated: DVG+A* mean 13.09 (sd 5.05, min 5, max 48),"
