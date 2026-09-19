@@ -218,9 +218,19 @@ vision noise into about 1.6 m/s of apparent speed, which swamps real motion. An
 early pass at choosing a clip did exactly that and reported every window as a
 2 m/s scramble. Sampled at 4 Hz the same windows run 0.05 to 0.56 m/s.
 
-The 180 to 210 s window is genuinely the most active in this recording. It is
-still a quiet passage by competitive standards, with two mobile robots and nine
-that hold position.
+The 180 to 210 s window is among the most active in this recording, and the
+recording is quiet by competitive standards. `scripts/scan_clip_motion.py`
+scored all 173 thirty-second windows of the 2611 s log (4 Hz sampling, the
+driver's own reader and coverage gate) on 20 September 2026: the 180 s window
+ranks 15th, with two robots that travel more than 1 m (B3 8.4 m at 0.54 m/s,
+B5 7.8 m at 0.34 m/s) and nine that hold position; the 195 s window has four
+(B3, B5 and two blue robots that move 1.0 m). Every window that scored higher
+does so through an identity jump, one (team, id) tracked on two physical
+robots: per-robot spans of 63 to 160 m and a "speed" of 5.7 m/s, both
+impossible on a 9 m field, at 60, 1095, 1440 and 1530 s. Replayed by identity,
+those windows would teleport an obstacle. The yellow team (NAMeC) moves less
+than 0.3 m in any window of the log. A livelier scene needs a different
+recording, not a different offset in this one.
 
 ## Telling a blocked goal from a corridor that closes
 
