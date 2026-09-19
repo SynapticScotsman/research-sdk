@@ -94,6 +94,19 @@ OBSTACLE_TURN_Y_MM = 1900.0
 # disable it so that every reported call builds a roadmap.
 FORCE_FULL_BUILD = False
 
+# numpy's default_rng pays a one-off initialisation on its first use in a
+# process: 39.4 ms in a bare interpreter, 24.8 ms after the planners are
+# imported, 0.02 ms after that (measured 19/09/2026). PRM is the only backend
+# that draws random numbers and every run of this driver is a fresh process,
+# so PRM's first build in every run carried that cost: 33 to 43 ms against
+# 4.5 to 5.5 ms for each later build, the slowest call being the first in 60 of
+# 60 runs across four sets, while Voronoi and the visibility graph showed no
+# first-call effect. It doubled PRM's ms/build. Pay it here, before any timed
+# call. With the generator warm, PRM's first build measured 6.4 ms.
+import numpy as _np
+
+_np.random.default_rng(0)
+
 
 def _prm(request, key):
     return prm_dijkstra.plan(request, skip_direct_path=FORCE_FULL_BUILD,
@@ -662,14 +675,21 @@ def run_provenance() -> dict:
 
     # Which file grSim read. Emma's patch makes grSim honour
     # RESEARCH_GRSIM_CONFIG; scripts/grsim-windows.ps1 sets it to
-    # %LOCALAPPDATA%\grsim\grsim-windows.xml for the native build, and that
+    # %USERPROFILE%\grsim\grsim-windows.xml for the native build, and that
     # variable lives in grSim's environment, not necessarily this one, so the
     # launcher's conventional path is tried before the home-directory default.
     candidates = []
     if os.environ.get("RESEARCH_GRSIM_CONFIG"):
         candidates.append(Path(os.environ["RESEARCH_GRSIM_CONFIG"]))
-    if out.get("grsim_location") == "windows" and os.environ.get("LOCALAPPDATA"):
-        candidates.append(Path(os.environ["LOCALAPPDATA"]) / "grsim" / "grsim-windows.xml")
+    if out.get("grsim_location") == "windows":
+        # The native build lives under the profile root, not AppData\Local: a
+        # packaged app (the Claude desktop app is one) has AppData\Local
+        # redirected to its private LocalCache, which is where the first build
+        # went unnoticed. The old location is still tried second so a grSim
+        # started from there is recorded with the file it actually read.
+        candidates.append(Path.home() / "grsim" / "grsim-windows.xml")
+        if os.environ.get("LOCALAPPDATA"):
+            candidates.append(Path(os.environ["LOCALAPPDATA"]) / "grsim" / "grsim-windows.xml")
     candidates.append(Path.home() / ".grsim.xml")
     cfg = next((c for c in candidates if c.exists()), candidates[-1])
     grsim: dict = {"config": str(cfg)}

@@ -247,22 +247,27 @@ obstacles the command line says. All three planners saw the identical scene, so
 the comparison holds and the scene description does not. Superseded for realism
 by `div-b-11obs-90/`, a full Division B field of 6 opponents and 5 teammates.
 
-| planner | laps | replans | failed | ms/build | closest mm |
-|---|---|---|---|---|---|
-| voronoi | 3 [3, 4] | 6 [4, 8] | 0 [0, 0] | 3.23 [2.26, 5.04] | 70 |
-| visibility | 5 [4, 5] | 7 [6, 7] | 3 [2, 17] | 6.10 [4.03, 8.54] | 75 |
-| prm | 4 [4, 5] | 5 [5, 7] | 0 [0, 4] | 18.76 [8.10, 27.23] | 105 |
+| planner | laps | replans | failed | ms/build | ms/build ex.1st | closest mm |
+|---|---|---|---|---|---|---|
+| voronoi | 3 [3, 4] | 6 [4, 8] | 0 [0, 0] | 3.23 [2.26, 5.04] | 3.30 [2.24, 5.47] | 70 |
+| visibility | 5 [4, 5] | 7 [6, 7] | 3 [2, 17] | 6.10 [4.03, 8.54] | 5.99 [3.92, 7.40] | 75 |
+| prm | 4 [4, 5] | 5 [5, 7] | 0 [0, 4] | 18.76 [8.10, 27.23] | 9.05 [4.25, 16.74] | 105 |
+
+Read the `ex.1st` column for PRM: fault 7 below explains why the plain
+`ms/build` doubles it.
 
 The offline ordering survives the move into closed loop, on a different
 obstacle field and with vision noise and latency present:
 
-| planner | offline ms/replan (`tab:predictive`) | grSim ms/build |
+| planner | offline ms/replan (`tab:predictive`) | grSim ms/build ex.1st |
 |---|---|---|
-| voronoi | 14.09 | 3.23 |
-| visibility | 15.67 | 6.10 |
-| prm | 39.33 | 18.76 |
+| voronoi | 14.09 | 3.30 |
+| visibility | 15.67 | 5.99 |
+| prm | 39.33 | 9.05 |
 
-The spread widens: PRM is 2.8 times Voronoi offline and 5.8 times here.
+PRM is 2.8 times Voronoi offline and 2.7 times here; on the 11-obstacle
+Division B sets below it is 1.4 to 1.6 times. The earlier version of this
+table read 18.76 for PRM and "5.8 times", which was the first-call artefact.
 
 Failures concentrate in the visibility graph, which holds 5 of the 6
 highest-failure runs, each coinciding with an obstacle 35 to 82 mm away.
@@ -275,3 +280,50 @@ Standing caveats: closest approach is from vision positions and is not a
 collision count; replayed obstacles do not react to the controlled robot; this
 is one 30 s clip and compares implementations rather than establishing which
 planner is best; controller error and planner error are not yet separated.
+
+## Fault 7: PRM's first call paid numpy's RNG initialisation
+
+Every driver run is a fresh process. numpy's `default_rng` costs 39.4 ms on
+its first use in a bare interpreter, 24.8 ms once the planners are imported,
+and 0.02 ms after that (measured 19 September 2026). PRM is the only backend
+that draws random numbers, so its first roadmap in every run carried that
+cost. In the per-call diagnostics of all four Division B sets (Windows and
+WSL, 90 and 180 mm) PRM's first successful build took 33 to 43 ms at the
+median and every later build 4.5 to 5.5 ms; the slowest call was the first in
+60 of 60 runs. Voronoi and the visibility graph, which draw nothing, showed no
+first-call effect (first 2.9 against rest 3.1 ms; 14.2 against 13.8 ms).
+
+With five or six builds per run, one 35 ms call doubles the mean:
+
+| set | PRM ms/build | PRM ms/build ex.1st |
+|---|---|---|
+| div-b-11obs-y750-90 (WSL) | 11.71 [9.10, 17.14] | 5.76 [4.36, 7.57] |
+| div-b-11obs-y750-180 (WSL) | 10.04 [8.34, 16.18] | 6.19 [4.92, 8.64] |
+| win-div-b-11obs-y750-90 | 10.38 [9.15, 67.26] | 5.09 [4.50, 8.29] |
+| win-div-b-11obs-y750-180 | 9.30 [8.15, 12.83] | 4.65 [4.37, 6.48] |
+| paired-blue-lane1500-fullbuild | 18.76 [8.10, 27.23] | 9.05 [4.25, 16.74] |
+
+**Fixed by** `drive_grsim.py` calling `default_rng` once at import, before any
+timed call; a PRM run made afterwards had builds of 13.1, 11.4, 11.1, 14.2,
+11.4 and 18.6 ms with no first-call step (absolute values inflated by an
+offline sweep running at the same time). `summarise_overnight.py` prints
+`ms/build ex.1st` so the sets recorded before the fix read correctly. The
+per-build ordering with the artefact removed is Voronoi, PRM, visibility at
+about 1 : 1.6 : 4.6 on the Division B sets.
+
+The offline harness is not affected in the same way: `dynamic_scenario.py`
+runs hundreds of samples in one process, so the initialisation lands on one
+call in thousands.
+
+## The same comparison on native Windows
+
+`results/grsim/win-div-b-11obs-y750-{90,180}/` repeat the two Division B
+sets on the native Windows grSim with Windows Python 3.13, 45 runs each on
+one simulator process, made by `scripts/batch_grsim.py`. Crossings, replans
+and failures match the WSL medians in every cell (WSL visibility replans at
+180 mm are 18 [13, 21] against 19 [13, 27]); per-build times are 0.78 to 0.96
+of the WSL values across the nine planner-by-threshold cells; closest
+approach agrees within the run-to-run spread. The README in the 90 mm
+directory has the full tables. This says the WSL result reproduces on a
+different host and interpreter; it does not add evidence about which planner
+is best.

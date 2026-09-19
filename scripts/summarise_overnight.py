@@ -80,6 +80,26 @@ def _built_ms(robot):
     return robot["mean_plan_ms"]
 
 
+def _steady_ms(robot):
+    """Mean milliseconds over successful calls after the first one.
+
+    Every driver run is a fresh process, and numpy's default_rng costs 25 to
+    39 ms on its first use in a process (measured 19/09/2026; 0.02 ms after).
+    PRM is the only backend that draws random numbers, so its first build in
+    every run carried that cost: 33 to 43 ms against 4.5 to 5.5 ms for each
+    later build, the slowest call being the first in 60 of 60 runs across four
+    sets, while Voronoi and the visibility graph showed no first-call effect.
+    That doubled PRM's ms/build. drive_grsim.py now warms the generator before
+    any timed call; for sets recorded before that, this column is the number
+    to read. nan when a run built only one path.
+    """
+    events = robot.get("diagnostics", {}).get("plan_events") or []
+    built = [e["planning_ms"] for e in events if e.get("status") == "path"]
+    if len(built) > 1:
+        return sum(built[1:]) / (len(built) - 1)
+    return float("nan")
+
+
 def _spread(values):
     if not values:
         return "n/a"
@@ -107,8 +127,8 @@ def job1() -> None:
           f"{m['robots']} controlled robot, {m['obstacles']} replayed\n")
 
     head = (f"{'planner':<12}{'runs':>5}{'crossings':>24}{'replans':>24}"
-            f"{'direct':>24}{'failed':>24}{'worst streak':>24}{'ms/build':>24}{'ms/call':>24}"
-            f"{'closest mm':>24}")
+            f"{'direct':>24}{'failed':>24}{'worst streak':>24}{'ms/build':>24}{'ms/build ex.1st':>24}"
+            f"{'ms/call':>24}{'closest mm':>24}")
     print(head)
     print("-" * len(head))
     for planner in ("voronoi", "visibility", "prm"):
@@ -122,12 +142,16 @@ def job1() -> None:
               f"{_spread([r.get('failed_plans', 0) for r in rs]):>24}"
               f"{_spread([_fail_streak(r) for r in rs]):>24}"
               f"{_spread([_built_ms(r) for r in rs]):>24}"
+              f"{_spread([v for v in (_steady_ms(r) for r in rs) if v == v]):>24}"
               f"{_spread([r['mean_plan_ms'] for r in rs]):>24}"
               f"{_spread([r['closest_mm'] for r in rs]):>24}")
     print("\nmedian [min, max] over runs. Closest separation is from VISION positions,")
     print("so it is not a physics contact count and not a collision total.")
     print("ms/build averages only calls that returned a path; ms/call is the stored\n"
-          "mean over every call, which a failure at about 0.15 ms drags downward.")
+          "mean over every call, which a failure at about 0.15 ms drags downward.\n"
+          "ms/build ex.1st leaves out each run's first build: in a fresh process that call\n"
+          "pays numpy's one-off default_rng initialisation (25-39 ms), which only PRM uses.\n"
+          "For sets recorded before drive_grsim.py warmed the generator, read that column.")
 
     # A failed call returns in roughly 0.15 ms, so a large failure share pulls
     # mean_plan_ms away from the roadmap build it is meant to measure. A goal
