@@ -1,4 +1,85 @@
-# Running the grSim driver on Windows
+# Running grSim and its driver on Windows
+
+Two working arrangements, both verified on Windows 10 Enterprise 19045 without
+admin rights:
+
+1. **Native grSim on Windows** (19 September 2026). Built from the same commit
+   as the WSL build with MSYS2's prebuilt Qt, ODE and protobuf. No WSL
+   involved at all. Run it headless for experiments; see below for why.
+2. **grSim in WSL, driver on Windows over unicast** (18 September 2026). Kept
+   for machines without an MSYS2 build.
+
+## 1. Native Windows build
+
+grSim's source has no Linux-only code, its CMake has `WIN32` branches and its
+INSTALL.md documents a 64-bit Windows build via vcpkg. What kept it in WSL here
+was toolchain, and MSYS2 (`C:\msys64`) removes that: `pacman` supplies gcc,
+CMake, Ninja, Qt 5.15, ODE 0.16.6 with its CMake config, and protobuf as
+prebuilt packages, so the build took minutes rather than the hours vcpkg needs
+to compile Qt.
+
+Recipe, from an MSYS2 MINGW64 shell, source cloned to a path without spaces
+outside OneDrive (`%LOCALAPPDATA%\grsim\src`), Emma's
+`grsim-isolated-config.patch` applied:
+
+```bash
+pacman -S --needed git mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake \
+    mingw-w64-x86_64-ninja mingw-w64-x86_64-pkgconf mingw-w64-x86_64-qt5-base \
+    mingw-w64-x86_64-ode mingw-w64-x86_64-protobuf
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
+cmake -S src -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_CLIENTS=OFF -DCMAKE_INSTALL_PREFIX=install
+cmake --build build --parallel 8 && cmake --install build
+```
+
+Two things in that recipe are not Windows-specific. `CMAKE_POLICY_VERSION_MINIMUM`
+is needed because VarTypes and the protobuf 3.6.1 that grSim builds for itself
+declare minimum CMake versions that CMake 4 refuses; the same would happen on
+Linux with CMake 4. And grSim builds protobuf 3.6.1 deliberately: its
+`cmake/modules/FindOrBuildProtobuf.cmake` says versions at or above 3.21 are
+incompatible with how the project is set up.
+
+The executable links Qt and the MinGW runtime from `C:\msys64\mingw64\bin`, so
+`scripts/grsim-windows.ps1` puts that on PATH for the process and points
+`RESEARCH_GRSIM_CONFIG` at `%LOCALAPPDATA%\grsim\grsim-windows.xml`, seeded
+from the WSL configuration so it carries the same 23 mm noise and 9 ms delay.
+
+```powershell
+.\scripts\grsim-windows.ps1 -Headless
+$env:PYTHONPATH = "src"
+.\..\research-sdk\.venv\Scripts\python.exe scripts\drive_grsim.py `
+  --planner voronoi --robots 1 --obstacles 11 --opponents log `
+  --log \\wsl$\Ubuntu\home\paulk\ssl-gamelogs\2024-07-19_TurtleRabbit-vs-NAMeC.log.gz `
+  --log-skip 180 --log-seconds 30 --duration 30 `
+  --trigger geometric --trigger-centre-threshold-mm 180 `
+  --replay-team both --traverse-x 2400 --lane-centre-mm 750 --force-full-build `
+  --out-json results\grsim\windows-native-voronoi-30s.json
+```
+
+No `--grsim-host`: commands go to `127.0.0.1:20010` and vision arrives on the
+multicast group, which works on the local host (481 frames in 4 s with the
+window, 945 headless).
+
+### Headless or it is not real time
+
+| 30 s run, same configuration | GUI window | `--headless` | WSL-native reference |
+|---|---|---|---|
+| grSim capture clock advanced | 11.8 s | 25.0 s | 29.4 s |
+| distance travelled | 16174 mm | 30010 mm | 30118 mm |
+| effective speed | 0.54 m/s | 1.00 m/s | 1.00 m/s |
+| crossings | 2 | 4 | 4 [4, 5] |
+| ms per build | 4.14 | 3.69 | 3.78 [3.15, 4.88] |
+| closest approach, mm | 698 | 644 | 690 [488, 711] |
+
+With the window open on this machine's Intel integrated graphics, rendering
+slows the physics loop to about 0.4 times real time and the robot covers half
+the distance. Headless matches the WSL reference on every metric. The capture
+clock span is the time between the first and last planning call, so it varies
+with when plans happen; distance travelled is the decisive row.
+
+The result file records `provenance.grsim_location: "windows"`, the local pid
+and start time, and the config path actually read.
+
+## 2. grSim in WSL, driver on Windows over unicast
 
 grSim stays in WSL. The driver, `scripts/drive_grsim.py`, runs under Windows
 Python. Verified 18 September 2026 on Windows 10 Enterprise 19045, no admin

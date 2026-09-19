@@ -581,16 +581,41 @@ def run_provenance() -> dict:
         return subprocess.run(argv, capture_output=True, text=True,
                               timeout=15).stdout.strip()
 
-    out["grsim_location"] = "wsl" if on_windows else "local"
-    try:
-        pid = where_grsim_lives("pgrep -o grSim")
-        out["grsim_pid"] = int(pid) if pid else None
-        # Process start time, so a reused pid after a restart is still distinct.
-        out["grsim_started"] = (
-            where_grsim_lives(f"ps -o lstart= -p {pid}") or None) if pid else None
-    except Exception:  # noqa: BLE001 - provenance must never fail a run
-        out["grsim_pid"] = None
-        out["grsim_started"] = None
+    # A native Windows grSim.exe takes precedence. Since 19/09/2026 there is
+    # one, built with MSYS2 (scripts/grsim-windows.ps1); before that a driver
+    # on Windows could only be talking to grSim in WSL, and assuming so here
+    # recorded WSL's pid and config against a run the Windows build produced.
+    local_pid = None
+    if on_windows:
+        try:
+            listing = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq grSim.exe", "/FO", "CSV", "/NH"],
+                capture_output=True, text=True, timeout=15).stdout
+            found = re.search(r'"grSim\.exe","(\d+)"', listing)
+            local_pid = int(found.group(1)) if found else None
+        except Exception:  # noqa: BLE001 - provenance must never fail a run
+            local_pid = None
+    if local_pid:
+        out["grsim_location"] = "windows"
+        out["grsim_pid"] = local_pid
+        try:
+            out["grsim_started"] = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 f"(Get-Process -Id {local_pid}).StartTime.ToString('s')"],
+                capture_output=True, text=True, timeout=15).stdout.strip() or None
+        except Exception:  # noqa: BLE001
+            out["grsim_started"] = None
+    else:
+        out["grsim_location"] = "wsl" if on_windows else "local"
+        try:
+            pid = where_grsim_lives("pgrep -o grSim")
+            out["grsim_pid"] = int(pid) if pid else None
+            # Process start time, so a reused pid after a restart is still distinct.
+            out["grsim_started"] = (
+                where_grsim_lives(f"ps -o lstart= -p {pid}") or None) if pid else None
+        except Exception:  # noqa: BLE001 - provenance must never fail a run
+            out["grsim_pid"] = None
+            out["grsim_started"] = None
     try:
         out["git_revision"] = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=str(HERE.parent),
@@ -633,12 +658,25 @@ def run_provenance() -> dict:
         except Exception:  # noqa: BLE001
             out["git_revision"] = None
 
-    cfg = Path.home() / ".grsim.xml"
+    import os
+
+    # Which file grSim read. Emma's patch makes grSim honour
+    # RESEARCH_GRSIM_CONFIG; scripts/grsim-windows.ps1 sets it to
+    # %LOCALAPPDATA%\grsim\grsim-windows.xml for the native build, and that
+    # variable lives in grSim's environment, not necessarily this one, so the
+    # launcher's conventional path is tried before the home-directory default.
+    candidates = []
+    if os.environ.get("RESEARCH_GRSIM_CONFIG"):
+        candidates.append(Path(os.environ["RESEARCH_GRSIM_CONFIG"]))
+    if out.get("grsim_location") == "windows" and os.environ.get("LOCALAPPDATA"):
+        candidates.append(Path(os.environ["LOCALAPPDATA"]) / "grsim" / "grsim-windows.xml")
+    candidates.append(Path.home() / ".grsim.xml")
+    cfg = next((c for c in candidates if c.exists()), candidates[-1])
     grsim: dict = {"config": str(cfg)}
     xml = ""
     if cfg.exists():
         xml = cfg.read_text(encoding="utf-8", errors="replace")
-    elif on_windows:
+    elif on_windows and out.get("grsim_location") == "wsl":
         try:
             xml = where_grsim_lives("cat ~/.grsim.xml")
             grsim["config"] = "~/.grsim.xml (WSL)"
