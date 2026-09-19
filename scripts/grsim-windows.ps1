@@ -24,6 +24,15 @@
 # mingw-w64-x86_64-qt5-tools and running windeployqt would make a standalone
 # folder; not done yet.
 #
+# WHERE IT LIVES: %USERPROFILE%\grsim (src, install, grsim-windows.xml, logs),
+# not %LOCALAPPDATA%. The first build was made from inside the Claude desktop
+# app, a packaged (MSIX) process, and Windows redirects every write such a
+# process makes under AppData\Local into the app's private
+# AppData\Local\Packages\Claude_*\LocalCache\Local. The install was complete
+# and ran, and was invisible to an ordinary PowerShell and to WSL. Checked
+# 19/09/2026 by writing a probe file and listing the real path from WSL. The
+# profile root and C:\msys64 are not redirected.
+#
 # RESEARCH_GRSIM_CONFIG is the hook Emma's patch adds: grSim reads that file
 # instead of %USERPROFILE%\.grsim.xml and does not write settings back on exit.
 # grsim-windows.xml was seeded from the WSL configuration, so it carries the
@@ -42,7 +51,7 @@
 param(
     [switch]$Headless,
     [switch]$Stop,
-    [string]$Root = "$env:LOCALAPPDATA\grsim"
+    [string]$Root = "$env:USERPROFILE\grsim"
 )
 
 if ($Stop) {

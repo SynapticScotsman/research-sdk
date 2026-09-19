@@ -19,7 +19,7 @@ prebuilt packages, so the build took minutes rather than the hours vcpkg needs
 to compile Qt.
 
 Recipe, from an MSYS2 MINGW64 shell, source cloned to a path without spaces
-outside OneDrive (`%LOCALAPPDATA%\grsim\src`), Emma's
+outside OneDrive (`%USERPROFILE%\grsim\src`), Emma's
 `grsim-isolated-config.patch` applied:
 
 ```bash
@@ -40,15 +40,29 @@ incompatible with how the project is set up.
 
 The executable links Qt and the MinGW runtime from `C:\msys64\mingw64\bin`, so
 `scripts/grsim-windows.ps1` puts that on PATH for the process and points
-`RESEARCH_GRSIM_CONFIG` at `%LOCALAPPDATA%\grsim\grsim-windows.xml`, seeded
+`RESEARCH_GRSIM_CONFIG` at `%USERPROFILE%\grsim\grsim-windows.xml`, seeded
 from the WSL configuration so it carries the same 23 mm noise and 9 ms delay.
+
+### Where it lives, and why not AppData
+
+Everything is under `%USERPROFILE%\grsim`: `src`, `install`, `grsim-windows.xml`
+and `logs` (a copy of the match log, so the driver no longer reads over
+`\wsl$`). The first build went to `%LOCALAPPDATA%\grsim` and appeared to work,
+but it had been made from inside the Claude desktop app, which is a packaged
+(MSIX) process: Windows redirects such a process's writes under `AppData\Local`
+into `AppData\Local\Packages\Claude_*\LocalCache\Local`. From an ordinary
+PowerShell, and from WSL, `%LOCALAPPDATA%\grsim` did not exist. Found
+19 September 2026 by writing a probe file and listing the real path from
+WSL; the profile root and `C:\msys64` are not redirected. Runs recorded before
+the move carry the LocalCache path in `provenance.grsim.config`; the file is
+byte-identical to the one now under the profile root.
 
 ```powershell
 .\scripts\grsim-windows.ps1 -Headless
 $env:PYTHONPATH = "src"
 .\..\research-sdk\.venv\Scripts\python.exe scripts\drive_grsim.py `
   --planner voronoi --robots 1 --obstacles 11 --opponents log `
-  --log \\wsl$\Ubuntu\home\paulk\ssl-gamelogs\2024-07-19_TurtleRabbit-vs-NAMeC.log.gz `
+  --log $env:USERPROFILE\grsim\logs\2024-07-19_TurtleRabbit-vs-NAMeC.log.gz `
   --log-skip 180 --log-seconds 30 --duration 30 `
   --trigger geometric --trigger-centre-threshold-mm 180 `
   --replay-team both --traverse-x 2400 --lane-centre-mm 750 --force-full-build `
@@ -58,6 +72,18 @@ $env:PYTHONPATH = "src"
 No `--grsim-host`: commands go to `127.0.0.1:20010` and vision arrives on the
 multicast group, which works on the local host (481 frames in 4 s with the
 window, 945 headless).
+
+For a paired set (15 repeats of each planner, alternating, on one simulator
+process, existing outputs skipped so it resumes) use the batch runner, which
+starts the headless build itself if none is running:
+
+```powershell
+.\..\research-sdk\.venv\Scripts\python.exe scripts\batch_grsim.py --out-dir results\grsim\win-div-b-11obs-y750-90 --threshold-mm 90
+.\..\research-sdk\.venv\Scripts\python.exe scripts\summarise_overnight.py win-div-b-11obs-y750-90
+```
+
+`scripts\scan_clip_motion.py` ranks every 30 s window of the log by how many
+robots travel and how fast, for choosing a livelier clip than skip 180.
 
 ### Headless or it is not real time
 
